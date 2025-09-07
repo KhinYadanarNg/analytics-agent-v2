@@ -1,0 +1,10 @@
+{
+    "name": "analytics-agent-v2",
+    "version": "1.0.0",
+    "description": "Analytics AI agent backend using FastAPI",
+    "main": "app/main.py",
+    "scripts": {
+        "start": "uvicorn app.main:app --reload"
+    },
+    "dependencies": {}
+}
