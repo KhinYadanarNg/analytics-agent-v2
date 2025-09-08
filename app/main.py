@@ -1,9 +1,14 @@
 
+import base64
 from fastapi import FastAPI, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.auth import validate_jwt_token, bearer_scheme
 from app.validator import prompt_validator
+from app.llm_service import llm_service
+from app.database_service import db_service
+from app.chart_service import chart_service
+from app.chart_generator import chart_generator
 
 app = FastAPI()
 
@@ -16,23 +21,77 @@ async def receive_prompt(
     request: PromptRequest,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
 ):
-    # Validate JWT token
+    # Step 1: Validate JWT token
     user = validate_jwt_token(credentials)
     
-    # Validate user prompt
+    # Step 2: Validate user prompt
     validation_result = prompt_validator.validate_prompt(request.prompt)
     cleaned_prompt = validation_result["cleaned_prompt"]
     
-    # TODO: Call LLM to generate SQL query from cleaned_prompt
-    # TODO: Execute SQL query against database
-    # TODO: Generate chart from results
-    
-    return {
-        "received_prompt": cleaned_prompt,
-        "user": user,
-        "validation": validation_result["message"],
-        "next_steps": ["generate_sql", "execute_query", "create_chart"]
-    }
+    # Step 3: Use LLM to determine which tool to call and with what parameters
+    llm_result = llm_service.generate_sql_query(cleaned_prompt)
+    tool_calls = llm_result.get("tool_calls")
+    print(f"🔧 tool_calls from LLM: {tool_calls}")
+
+    if not tool_calls:
+        return {"error": "No tool call detected from LLM", "llm_result": llm_result}
+
+    # Only handle the first tool call for now
+    tool_call = tool_calls[0]
+    tool_name = tool_call.function.name
+    tool_args = tool_call.function.arguments
+    import json
+    if isinstance(tool_args, str):
+        tool_args = json.loads(tool_args)
+
+    # Map tool name to backend function
+    if tool_name == "get_records_by_status":
+        file_name = tool_args.get("file_name")
+        status = tool_args.get("status")
+        file_id = await db_service.get_file_id_by_name(file_name)
+        if not file_id:
+            return {"error": "File not found in header table", "file_name": file_name}
+        db_result = await db_service.get_records_by_status(file_id=file_id, status=status)
+        return {
+            "user_prompt": cleaned_prompt,
+            "tool": tool_name,
+            "file_name": file_name,
+            "status": status,
+            "data": db_result["data"],
+            "row_count": db_result["row_count"],
+            "workflow_completed": True
+        }
+    elif tool_name == "get_success_rate_by_file_name":
+        file_name = tool_args.get("file_name")
+        file_id = await db_service.get_file_id_by_name(file_name)
+        if not file_id:
+            return {"error": "File not found in header table", "file_name": file_name}
+        chart_result = await db_service.get_success_rate_by_file_id(file_id)
+        
+        # Generate chart image using matplotlib and encode as base64
+        chart_base64 = chart_generator.generate_bar_chart_base64(
+            chart_data=chart_result.get("chart_data", []),
+            title=f"Success/Fail Rate for {file_name}"
+        )
+
+    # try:
+    #     with open("test_chart.png", "wb") as f:
+    #         f.write(base64.b64decode(chart_base64))
+    #     print("💾 Chart saved as 'test_chart.png'")
+    # except Exception as e:
+    #     print(f"❌ Error saving chart: {e}")
+        
+        return {
+            "user_prompt": cleaned_prompt,
+            "tool": tool_name,
+            "file_name": file_name,
+            "chart_data": chart_result.get("chart_data", []),
+            "chart_image_base64": chart_base64,
+            "row_count": chart_result.get("row_count", 0),
+            "workflow_completed": True
+        }
+    else:
+        return {"error": f"Unknown tool called: {tool_name}", "tool_args": tool_args}
 
 @app.get("/health")
 async def health_check():
@@ -41,4 +100,19 @@ async def health_check():
 @app.post("/test-query")
 async def test_receive_prompt(request: PromptRequest):
     # Test endpoint without authentication
-    return {"received_prompt": request.prompt, "status": "success"}
+    print(f"🧪 Test request received: {request.prompt}")
+    
+    # Test the full workflow without JWT
+    validation_result = prompt_validator.validate_prompt(request.prompt)
+    cleaned_prompt = validation_result["cleaned_prompt"]
+    print(f"✅ Validation passed: {cleaned_prompt}")
+    
+    # Test LLM service
+    llm_result = llm_service.generate_sql_query(cleaned_prompt)
+    print(f"🤖 LLM Result: {llm_result}")
+    
+    return {
+        "received_prompt": request.prompt, 
+        "status": "success",
+        "llm_result": llm_result
+    }

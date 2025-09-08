@@ -83,14 +83,19 @@ class PromptValidator:
         # Check for analytics-related intent using multiple approaches
         
         # Approach 1: Semantic patterns (more flexible than keywords)
-        analytics_patterns = [
-            r'\b(show|display|get|find|analyze|report)\b.*\b(data|sales|revenue|metrics)\b',
-            r'\b(create|generate|build|make)\b.*\b(chart|graph|visualization|dashboard)\b',
-            r'\b(calculate|compute|sum|count|average|total)\b',
-            r'\b(compare|trend|analysis|insights|statistics)\b',
-            r'\bhow\s+(much|many|often)\b',
-            r'\bwhat\s+(is|are)\s+the\b.*\b(sales|revenue|performance|metrics)\b',
-        ]
+            analytics_patterns = [
+                r'\b(show|display|get|find|analyze|report)\b.*\b(data|sales|revenue|metrics)\b',
+                r'\b(create|generate|build|make)\b.*\b(chart|graph|visualization|dashboard)\b',
+                r'\b(calculate|compute|sum|count|average|total|rate|percentage|ratio)\b',
+                r'\b(compare|trend|analysis|insights|statistics|success\s*rate|fail\s*rate|error\s*rate|success\s*percentage|failure\s*percentage|success\s*ratio|failure\s*ratio)\b',
+                r'\bhow\s+(much|many|often|successful|unsuccessful|accurate|inaccurate)\b',
+                r'\bwhat\s+(is|are)\s+the\b.*\b(sales|revenue|performance|metrics|success\s*rate|fail\s*rate|error\s*rate)\b',
+                # Added patterns for record queries by status and file name
+                r'\b(show|list|get|display)\b.*\b(records?)\b.*\b(file|filename|csv)\b',
+                r'\b(success|failed|error|rate|percentage|ratio)\b.*\b(records?)\b.*\b(file|filename|csv)\b',
+                r'\b(records?)\b.*\b(file|filename|csv)\b',
+                r'\b(success\s*rate|fail\s*rate|error\s*rate|success\s*percentage|failure\s*percentage|success\s*ratio|failure\s*ratio)\b.*\b(file|filename|csv)\b',
+            ]
         
         # Approach 2: Question patterns for analytics
         question_patterns = [
