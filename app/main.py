@@ -7,7 +7,6 @@ from app.auth import validate_jwt_token, bearer_scheme
 from app.validator import prompt_validator
 from app.llm_service import llm_service
 from app.database_service import db_service
-from app.chart_service import chart_service
 from app.chart_generator import chart_generator
 
 app = FastAPI()
