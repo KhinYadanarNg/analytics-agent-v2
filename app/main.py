@@ -36,6 +36,13 @@ async def receive_prompt(
     try:
         # Step 1: Validate JWT token and setup session
         user = validate_jwt_token(credentials)
+        # Extract organization id from token if present (check common claim names and nested claims)
+        org_id = user.get("orgId")
+        
+
+        # Log a minimal, non-sensitive view of the validated token for observability
+        safe_user_log = {"sub": user.get("sub"), "org_id": org_id}
+        logger.info("Authenticated user: %s", safe_user_log)
         user_id = user.get("sub", "anonymous")
 
         # Create or get session
@@ -56,6 +63,7 @@ async def receive_prompt(
             "user_prompt": cleaned_prompt,
             "session_id": session_id,
             "user_id": user_id,
+            "org_id": org_id
         }
 
         # Try plan-first via agent wrapper

@@ -46,7 +46,8 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
                 "message": f"The file '{file_name}' was not found in the database.",
                 "file_name": file_name
             }
-        chart_result = await db_service.get_success_rate_by_file_id(file_id)
+        org_id = context.get("org_id")
+        chart_result = await db_service.get_success_rate_by_file_id(file_id=file_id, org_id=org_id)
 
         # Generate chart image using matplotlib with error handling
         try:
