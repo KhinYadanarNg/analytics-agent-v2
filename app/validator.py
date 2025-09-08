@@ -80,56 +80,58 @@ class PromptValidator:
                     detail="Prompt contains restricted keywords"
                 )
         
-        # Check for analytics-related intent using multiple approaches
-        
-        # Approach 1: Semantic patterns (more flexible than keywords)
-            analytics_patterns = [
-                r'\b(show|display|get|find|analyze|report)\b.*\b(data|sales|revenue|metrics)\b',
-                r'\b(create|generate|build|make)\b.*\b(chart|graph|visualization|dashboard)\b',
-                r'\b(calculate|compute|sum|count|average|total|rate|percentage|ratio)\b',
-                r'\b(compare|trend|analysis|insights|statistics|success\s*rate|fail\s*rate|error\s*rate|success\s*percentage|failure\s*percentage|success\s*ratio|failure\s*ratio)\b',
-                r'\bhow\s+(much|many|often|successful|unsuccessful|accurate|inaccurate)\b',
-                r'\bwhat\s+(is|are)\s+the\b.*\b(sales|revenue|performance|metrics|success\s*rate|fail\s*rate|error\s*rate)\b',
-                # Added patterns for record queries by status and file name
-                r'\b(show|list|get|display)\b.*\b(records?)\b.*\b(file|filename|csv)\b',
-                r'\b(success|failed|error|rate|percentage|ratio)\b.*\b(records?)\b.*\b(file|filename|csv)\b',
-                r'\b(records?)\b.*\b(file|filename|csv)\b',
-                r'\b(success\s*rate|fail\s*rate|error\s*rate|success\s*percentage|failure\s*percentage|success\s*ratio|failure\s*ratio)\b.*\b(file|filename|csv)\b',
-            ]
-        
-        # Approach 2: Question patterns for analytics
-        question_patterns = [
-            r'^\s*(what|how|when|where|which|why)\b',
-            r'\?\s*$',  # Ends with question mark
+        # Block common non-analytics greetings and casual conversation
+        casual_patterns = [
+            r'^\s*(hi|hello|hey|good\s+morning|good\s+afternoon|good\s+evening)\s*$',
+            r'^\s*(how\s+are\s+you|how\s+do\s+you\s+do|what\'s\s+up|wassup)\s*\??$',
+            r'^\s*(thank\s+you|thanks|bye|goodbye|see\s+you)\s*$',
+            r'^\s*(yes|no|ok|okay|sure)\s*$',
+            r'^\s*(who\s+are\s+you|what\s+is\s+your\s+name)\s*\??$'
         ]
         
-        # Approach 3: Intent detection based on sentence structure
-        has_semantic_intent = any(re.search(pattern, prompt_lower) for pattern in analytics_patterns)
-        has_question_intent = any(re.search(pattern, prompt_lower) for pattern in question_patterns)
+        # Check if prompt is casual conversation
+        for pattern in casual_patterns:
+            if re.search(pattern, prompt_lower):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This is an analytics agent. Please ask questions about data, files, success rates, or request charts/reports."
+                )
         
-        # Approach 4: Data-related nouns (more contextual)
-        data_nouns = ['data', 'information', 'report', 'chart', 'graph', 'metrics', 'kpi', 'dashboard']
-        has_data_context = any(noun in prompt_lower for noun in data_nouns)
+        # Check for analytics-related intent using multiple approaches
+        analytics_patterns = [
+            # File and data analysis patterns
+            r'\b(show|display|get|find|analyze|report|list)\b.*\b(data|records?|files?|csv)\b',
+            r'\b(success|fail|error|failure)\b.*\b(rate|percentage|ratio|count)\b',
+            r'\b(chart|graph|visualization|dashboard)\b',
+            r'\b(calculate|compute|sum|count|average|total)\b',
+            r'\b(file|filename|csv)\b.*\b(status|records?|data)\b',
+            # Specific to your system
+            r'customer_sample_values\.csv',
+            r'\b(master\s*data|tracker|header)\b',
+            # General analytics terms
+            r'\b(metrics|kpi|performance|statistics|insights|trends|analysis)\b'
+        ]
         
-        # Approach 5: Action verbs that suggest analytics intent
-        action_verbs = ['show', 'display', 'analyze', 'calculate', 'compare', 'visualize', 'track']
-        has_action_intent = any(verb in prompt_lower for verb in action_verbs)
+        # Analytics question patterns (more specific)
+        analytics_questions = [
+            r'\b(what|how\s+many|how\s+much|which)\b.*\b(data|records?|files?|success|fail|rate|percentage)\b',
+            r'\b(show\s+me|give\s+me|can\s+you)\b.*\b(chart|graph|data|records?|success\s*rate)\b'
+        ]
+        
+        # Check for analytics intent
+        has_analytics_pattern = any(re.search(pattern, prompt_lower) for pattern in analytics_patterns)
+        has_analytics_question = any(re.search(pattern, prompt_lower) for pattern in analytics_questions)
         
         # For testing purposes, allow "test" messages to pass
         is_test_message = 'test' in prompt_lower
         
-        # Combined validation - more flexible than keyword matching
-        has_analytics_intent = (
-            has_semantic_intent or 
-            has_question_intent or 
-            (has_data_context and has_action_intent) or
-            is_test_message
-        )
+        # Combined validation - must have clear analytics intent
+        has_analytics_intent = has_analytics_pattern or has_analytics_question or is_test_message
         
         if not has_analytics_intent:
             raise HTTPException(
                 status_code=400,
-                detail="Prompt should be analytics-related (ask questions about data, request charts/reports, or include data analysis terms)"
+                detail="This is an analytics agent. Please ask questions about data files, success rates, records, or request charts/reports. Example: 'Show me success rate for file customer_sample_values.csv'"
             )
         
         return {
