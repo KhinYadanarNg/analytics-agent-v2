@@ -19,7 +19,7 @@ class DatabaseService:
                 FilterExpression=boto3.dynamodb.conditions.Attr('file_id').eq(file_id)
             )
             items = response.get('Items', [])
-            print(f"[DEBUG] Items returned for file_id {file_id}: {items}")
+            #print(f"[DEBUG] Items returned for file_id {file_id}: {items}")
             total = len(items)
             if total == 0:
                 return {
@@ -141,6 +141,24 @@ class DatabaseService:
                 return {"success": False, "error": "File not found"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def list_available_files(self) -> Dict[str, Any]:
+        """List available files from header table with basic metadata.
+
+        Returns a dict with a list of files (id and file_name) to help user pick a file.
+        """
+        try:
+            response = self.header_table.scan(ProjectionExpression='id, file_name')
+            items = response.get('Items', [])
+            files = []
+            for it in items:
+                files.append({
+                    'id': it.get('id'),
+                    'file_name': it.get('file_name')
+                })
+            return {"success": True, "files": files, "count": len(files)}
+        except Exception as e:
+            return {"success": False, "error": str(e), "files": []}
 
 # Initialize database service
 db_service = DatabaseService()

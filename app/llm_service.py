@@ -4,14 +4,18 @@ import json
 import os
 from dotenv import load_dotenv
 from app.tool_schema import tools
+import logging
 
 # Load environment variables
 load_dotenv()
 
+logger = logging.getLogger("llm_service")
+
+
 class LLMService:
     def __init__(self):
         # Check if OpenAI API key is available
-        print("LLMService __init__ called")
+        logger.info("LLMService __init__ called")
 
         # Database schema context for DynamoDB
         self.database_schema = """
@@ -31,23 +35,38 @@ class LLMService:
                 - rule_status (String)
             """
         api_key = os.getenv("OPENAI_API_KEY")
-        if api_key is not None:
-            self.client = openai.OpenAI(api_key=api_key)
-            self.use_llm = True
-            print("⚠️  OpenAI API key found.")
+        if api_key:
+            try:
+                self.client = openai.OpenAI(api_key=api_key)
+                self.use_llm = True
+                logger.info("OpenAI API key found; LLM client initialized.")
+            except Exception as e:
+                self.client = None
+                self.use_llm = False
+                logger.exception("Failed to initialize OpenAI client: %s", e)
         else:
             self.client = None
             self.use_llm = False
-            print("⚠️  OpenAI API key not found. Using mock responses for demo.")
+            logger.warning("OpenAI API key not found. Using mock responses for demo.")
 
+    def extractPrompt(self, user_prompt: str) -> Dict[str, Any]:
+        """Convert user prompt to tool calls using LLM or provide a mock response.
 
-    def generate_sql_query(self, user_prompt: str) -> Dict[str, Any]:
+        Returns a dict with keys: success (bool), tool_calls (list) and llm_response (str) on success.
+        """
         # Defensive check for database_schema
-        if not hasattr(self, "database_schema") or not self.database_schema:
-            raise AttributeError("LLMService instance is missing 'database_schema'. Ensure you are using the instance and __init__ is called.")
-        """
-        Convert user prompt to SQL query using LLM or mock responses
-        """
+        if not getattr(self, "database_schema", None):
+            raise AttributeError("LLMService instance is missing 'database_schema'. Ensure __init__ was called.")
+
+        if not self.use_llm or not self.client:
+            logger.debug("LLM client unavailable; returning mock fallback tool call.")
+            # Simple mock: instruct to call list_available_files when user asks generically
+            return {
+                "success": True,
+                "tool_calls": [{"name": "list_available_files", "arguments": {}}],
+                "llm_response": "mock: list available files"
+            }
+
         try:
             system_prompt = f"""
 You are an expert analytics agent that helps users analyze data from DynamoDB tables. Your ONLY job is to understand the user's request and call the appropriate backend tool.
@@ -61,7 +80,7 @@ Available Tools:
     - Use when user asks for records with a specific status (e.g., "show me success records for file X")
 
 2. get_success_rate_by_file_name: Calculates success/fail rates for a file.
-    - Parameters: file_name (str)  
+    - Parameters: file_name (str)
     - Use when user asks for success rate, fail rate, percentage, or chart for a file
 
 CRITICAL RULES:
@@ -78,7 +97,7 @@ Examples:
 
 Your response should ONLY be tool calls, nothing else.
 """
-        
+
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
@@ -92,42 +111,38 @@ Your response should ONLY be tool calls, nothing else.
             # Parse the response
             content = response.choices[0].message.content
             tool_calls = getattr(response.choices[0].message, "tool_calls", None)
-            print(f"📝 Parsed LLM content: {content}")
-            print(f"🔧 tool_calls: {tool_calls}")
+            logger.debug("Parsed LLM content: %s", content)
+            logger.debug("tool_calls: %s", tool_calls)
 
             if tool_calls:
-                print("LLM tool calls detected:")
-                for call in tool_calls:
-                    print(f"Tool called: {call.function.name}")
-                    print(f"Arguments: {call.function.arguments}")
+                # Return the tool_calls as-is for the orchestration layer to handle
                 return {
                     "success": True,
                     "tool_calls": tool_calls,
                     "llm_response": content
                 }
             else:
-                print("📝 No tool calls detected from LLM.")
+                logger.warning("No tool calls detected from LLM.")
                 return {
                     "success": False,
                     "error": "LLM did not call any tools",
                     "llm_response": content,
                     "message": "Unable to understand your request. Please ask for data records or success rates for a specific file."
                 }
-        
+
         except Exception as e:
-            print(f"📝 Parsed error: {e}")
+            logger.exception("Error while calling LLM: %s", e)
             return {
                 "success": False,
                 "error": str(e),
                 "fallback_response": "Error processing the request."
             }
-        
-        def respond_with_chart(self, query_result: dict) -> dict:
-           """
-        Accepts the query result from the database and returns it to the LLM for chart generation.
-        Ensures chart_type and chart_data are present for LLM to generate a chart.
+
+    def respond_with_chart(self, query_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Accepts the query result from the database and validates it for chart generation.
+
+        Ensures chart_type and chart_data are present for downstream charting components.
         """
-        # You can add any additional formatting or validation here if needed
         if "chart_type" not in query_result or "chart_data" not in query_result:
             return {
                 "success": False,
@@ -136,7 +151,6 @@ Your response should ONLY be tool calls, nothing else.
             }
         return query_result
 
-        return query_result
 
 # Initialize LLM service
 llm_service = LLMService()
