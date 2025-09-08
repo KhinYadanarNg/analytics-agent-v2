@@ -5,16 +5,13 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 from typing import Optional
-from fastapi import FastAPI, Request, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, Depends
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.auth import validate_jwt_token, bearer_scheme
 from app.validator import prompt_validator
 from app.llm_service import llm_service
-from app.database_service import db_service
-from app.chart_generator import chart_generator
 from app.memory_service import memory_service
-from app.reasoning_engine import reasoning_engine
 from app.communication_coordinator import communication_coordinator, ComponentStatus
 from app.fallback_strategy import fallback_strategy, FallbackTrigger
 from app.plan_executor import execute_plan, execute_tool_with_coordination
