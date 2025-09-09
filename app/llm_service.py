@@ -61,6 +61,32 @@ class LLMService:
         if not getattr(self, "database_schema", None):
             raise AttributeError("LLMService instance is missing 'database_schema'. Ensure __init__ was called.")
 
+        # Pre-send sanitizer: detect common prompt-injection patterns and refuse/clarify
+        try:
+            import re
+
+            injection_patterns = [
+                r"(?i)ignore (previous|above|instructions)",
+                r"(?i)disregard (previous|instructions)",
+                r"(?i)from now on",
+                r"(?i)you are now",
+                r"(?i)act as",
+                r"(?i)^system:",
+                r"```",
+                r"(?i)api key|secret|password|private key|ssh key"
+            ]
+
+            for p in injection_patterns:
+                if re.search(p, user_prompt):
+                    logger.warning("Prompt appears to contain injection patterns: %s", p)
+                    return {
+                        "success": False,
+                        "clarify": "Your request contains content that looks like an attempt to override system instructions or exfiltrate secrets. Please remove those parts and re-submit."
+                    }
+        except Exception:
+            # if sanitizer fails, continue but log
+            logger.exception("Sanitizer failed unexpectedly")
+
         if not self.use_llm or not self.client:
             logger.debug("LLM client unavailable; returning mock fallback tool call.")
             # Simple mock: instruct to call list_available_files when user asks generically
@@ -177,19 +203,35 @@ If you call a tool, return only the tool call (function name and arguments) in t
             # Validator: ensure required params are present for each tool
             def _validate_tool_calls(tcs):
                 missing = []
+                suspicious_args = []
                 for tc in tcs:
                     name = tc.get("name")
+                    # Reject unknown tools immediately
+                    if name not in self.function_schemas:
+                        return False, f"Tool '{name}' is not allowed."
                     schema = self.function_schemas.get(name, {})
                     required = schema.get("required", [])
                     args = tc.get("arguments") or {}
                     for r in required:
                         if r not in args or args.get(r) in (None, ""):
                             missing.append((name, r))
+                    # Check args for suspicious content
+                    for k, v in args.items():
+                        if isinstance(v, str):
+                            low = v.lower()
+                            if any(tok in low for tok in ("rm -rf", "sudo", "exec", "openai_api_key", "api_key", "private key", "ssh key", "delete all", "drop table")):
+                                suspicious_args.append((name, k, v))
+                            # multi-line payloads or embedded instructions are suspicious
+                            if "\n" in v and len(v.splitlines()) > 3:
+                                suspicious_args.append((name, k, v))
                 if missing:
                     # Return a single precise clarifying question for the first missing param
                     name, param = missing[0]
                     question = f"Which {param} do you mean for {name}?"
                     return False, question
+                if suspicious_args:
+                    name, k, v = suspicious_args[0]
+                    return False, f"Argument '{k}' for tool '{name}' contains suspicious content and was rejected."
                 return True, None
 
             valid, clarify_question = _validate_tool_calls(tool_calls)
