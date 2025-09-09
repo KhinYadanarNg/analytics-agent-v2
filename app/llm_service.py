@@ -211,10 +211,23 @@ If you call a tool, return only the tool call (function name and arguments) in t
                         return False, f"Tool '{name}' is not allowed."
                     schema = self.function_schemas.get(name, {})
                     required = schema.get("required", [])
-                    args = tc.get("arguments") or {}
+                    
+                    # Ensure args is a dictionary, parse if it's a JSON string
+                    raw_args = tc.get("arguments") or {}
+                    if isinstance(raw_args, str):
+                        try:
+                            args = json.loads(raw_args)
+                        except json.JSONDecodeError:
+                            logger.warning("Invalid JSON in tool arguments: %s", raw_args)
+                            args = {}
+                    else:
+                        args = raw_args or {}
+                    
+                    # Check required parameters
                     for r in required:
                         if r not in args or args.get(r) in (None, ""):
                             missing.append((name, r))
+                    
                     # Check args for suspicious content
                     for k, v in args.items():
                         if isinstance(v, str):
@@ -224,6 +237,7 @@ If you call a tool, return only the tool call (function name and arguments) in t
                             # multi-line payloads or embedded instructions are suspicious
                             if "\n" in v and len(v.splitlines()) > 3:
                                 suspicious_args.append((name, k, v))
+                
                 if missing:
                     # Return a single precise clarifying question for the first missing param
                     name, param = missing[0]
