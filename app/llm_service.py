@@ -3,7 +3,7 @@ from typing import Dict, Any
 import json
 import os
 from dotenv import load_dotenv
-from app.tool_schema import tools
+from app.tool_schema import tools, function_schemas as TOOL_FUNCTION_SCHEMAS
 import logging
 
 # Load environment variables
@@ -49,6 +49,9 @@ class LLMService:
             self.use_llm = False
             logger.warning("OpenAI API key not found. Using mock responses for demo.")
 
+        # Use tool_schema as single source of truth for required params
+        self.function_schemas = TOOL_FUNCTION_SCHEMAS
+
     def extractPrompt(self, user_prompt: str) -> Dict[str, Any]:
         """Convert user prompt to tool calls using LLM or provide a mock response.
 
@@ -68,37 +71,42 @@ class LLMService:
             }
 
         try:
+            # Include a small machine-readable function schema block to help the model
+            function_schema_block = json.dumps({
+                "get_records_by_status": {"required": ["file_name", "status"]},
+                "get_success_rate_by_file_name": {"required": ["file_name"]},
+                "list_available_files": {"required": []}
+            }, indent=2)
+
             system_prompt = f"""
-You are an expert analytics agent that helps users analyze data from DynamoDB tables. Your ONLY job is to understand the user's request and call the appropriate backend tool.
+You are an expert analytics agent whose job is to map user requests to backend tool calls only.
 
 Database Schema:
 {self.database_schema}
 
-Available Tools:
-1. get_records_by_status: Retrieves records by file name and status.
-    - Parameters: file_name (str), status (str)
-    - Use when user asks for records with a specific status (e.g., "show me success records for file X")
+Function Schemas (machine-readable):
+{function_schema_block}
 
-2. get_success_rate_by_file_name: Calculates success/fail rates for a file.
-    - Parameters: file_name (str)
-    - Use when user asks for success rate, fail rate, percentage, or chart for a file
+Available Tools:
+- get_records_by_status(file_name, status)
+- get_success_rate_by_file_name(file_name)
+- list_available_files()
 
 CRITICAL RULES:
-- ALWAYS call a tool when the user asks for data, records, rates, or charts
-- NEVER try to generate SQL queries or charts yourself
-- NEVER return JSON responses - only call tools
-- If the user's request matches a tool's purpose, call that tool immediately
-- Extract the file name from the user's request and pass it as a parameter
+- ALWAYS call a tool when the user asks for data, records, rates, or charts.
+- If required parameters are missing, ASK ONE precise clarifying question instead of guessing.
+- NEVER generate charts or SQL yourself; call the appropriate tool.
 
 Examples:
 - "Show success records for customer.csv" → Call get_records_by_status with file_name="customer.csv", status="success"
 - "Show success rate for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv"
-- "Create chart for file X" → Call get_success_rate_by_file_name with file_name="X"
 
-Your response should ONLY be tool calls, nothing else.
+If you call a tool, return only the tool call (function name and arguments) in the SDK's tool-calling format.
 """
 
-            response = self.client.chat.completions.create(
+            # Flexible client invocation: support patterns where `chat` is a callable or attribute,
+            # where `completions` is a property, or where `create` exists at different levels.
+            call_kwargs = dict(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -108,14 +116,93 @@ Your response should ONLY be tool calls, nothing else.
                 tools=tools
             )
 
+            def _call_create(kwargs):
+                # pattern: client.chat.completions.create(...)
+                chat_attr = getattr(self.client, "chat", None)
+                if chat_attr:
+                    chat_obj = chat_attr() if callable(chat_attr) else chat_attr
+                    completions = getattr(chat_obj, "completions", None)
+                    if completions and hasattr(completions, "create"):
+                        return completions.create(**kwargs)
+
+                # pattern: client.completions.create(...)
+                completions = getattr(self.client, "completions", None)
+                if completions and hasattr(completions, "create"):
+                    return completions.create(**kwargs)
+
+                # pattern: client.create(...)
+                create_fn = getattr(self.client, "create", None)
+                if create_fn and callable(create_fn):
+                    return create_fn(**kwargs)
+
+                raise AttributeError("LLM client does not expose a compatible create(...) method")
+
+            response = _call_create(call_kwargs)
+
             # Parse the response
             content = response.choices[0].message.content
-            tool_calls = getattr(response.choices[0].message, "tool_calls", None)
+            raw_tool_calls = getattr(response.choices[0].message, "tool_calls", None)
             logger.debug("Parsed LLM content: %s", content)
-            logger.debug("tool_calls: %s", tool_calls)
+            logger.debug("raw_tool_calls: %s", raw_tool_calls)
+
+            # Normalize tool call shapes into canonical dicts: {name: str, arguments: dict}
+            def _normalize_tool_call(tc):
+                # OpenAI function-like shape
+                if isinstance(tc, dict) and tc.get("function"):
+                    fn = tc["function"]
+                    return {"name": fn.get("name"), "arguments": fn.get("arguments", {})}
+
+                # Flat dict shape
+                if isinstance(tc, dict) and tc.get("name"):
+                    return {"name": tc.get("name"), "arguments": tc.get("arguments", tc.get("args", {}))}
+
+                # Some SDKs return objects with attributes
+                if hasattr(tc, "function"):
+                    fn = tc.function
+                    args = getattr(fn, "arguments", {})
+                    name = getattr(fn, "name", None)
+                    return {"name": name, "arguments": args}
+
+                # Fallback: try to coerce
+                try:
+                    return {"name": tc["name"], "arguments": tc.get("arguments", {})}
+                except Exception:
+                    return {"name": str(tc), "arguments": {}}
+
+            tool_calls = []
+            if raw_tool_calls:
+                for rtc in raw_tool_calls:
+                    tool_calls.append(_normalize_tool_call(rtc))
+
+            # Validator: ensure required params are present for each tool
+            def _validate_tool_calls(tcs):
+                missing = []
+                for tc in tcs:
+                    name = tc.get("name")
+                    schema = self.function_schemas.get(name, {})
+                    required = schema.get("required", [])
+                    args = tc.get("arguments") or {}
+                    for r in required:
+                        if r not in args or args.get(r) in (None, ""):
+                            missing.append((name, r))
+                if missing:
+                    # Return a single precise clarifying question for the first missing param
+                    name, param = missing[0]
+                    question = f"Which {param} do you mean for {name}?"
+                    return False, question
+                return True, None
+
+            valid, clarify_question = _validate_tool_calls(tool_calls)
+            if not valid:
+                logger.info("Tool call missing required params, asking clarifying question: %s", clarify_question)
+                return {
+                    "success": False,
+                    "clarify": clarify_question,
+                    "tool_calls": tool_calls,
+                    "llm_response": content
+                }
 
             if tool_calls:
-                # Return the tool_calls as-is for the orchestration layer to handle
                 return {
                     "success": True,
                     "tool_calls": tool_calls,

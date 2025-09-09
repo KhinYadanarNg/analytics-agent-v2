@@ -38,3 +38,10 @@ tools = [
         }
     }
 ]
+
+# Simple function schema mapping (single source of truth for required params)
+function_schemas = {
+    "get_records_by_status": {"required": ["file_name", "status"]},
+    "get_success_rate_by_file_name": {"required": ["file_name"]},
+    "list_available_files": {"required": []}
+}
