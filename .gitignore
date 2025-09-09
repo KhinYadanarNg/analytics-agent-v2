@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.production
+.env_key
 
 # Python
 __pycache__/

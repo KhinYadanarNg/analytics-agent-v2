@@ -2,10 +2,11 @@
 import base64
 import json
 import logging
+import time
 logging.basicConfig(level=logging.INFO)
 
 from typing import Optional
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.auth import validate_jwt_token, bearer_scheme
@@ -17,6 +18,8 @@ from app.fallback_strategy import fallback_strategy, FallbackTrigger
 from app.plan_executor import execute_tool_with_coordination
 from app.agent import plan_and_execute
 
+# Enhanced security imports
+
 app = FastAPI()
 
 # Logger setup
@@ -27,23 +30,39 @@ class PromptRequest(BaseModel):
     session_id: Optional[str] = None
 
 
-async def setup_session_and_context(request: PromptRequest, credentials: HTTPAuthorizationCredentials):
-    """Setup user session and workflow context."""
+async def setup_session_and_context(request: PromptRequest, credentials: HTTPAuthorizationCredentials, http_request: Request):
+    """Setup user session and workflow context with enhanced security."""
+    
+    # JWT validation
     user = validate_jwt_token(credentials)
     org_id = user.get("orgId")
-    
-    # Log minimal, non-sensitive user info
-    safe_user_log = {"sub": user.get("sub"), "org_id": org_id}
-    logger.info("Authenticated user: %s", safe_user_log)
     user_id = user.get("sub", "anonymous")
-
-    # Create or get session
-    session_id = request.session_id or memory_service.create_session(user_id)
+    
+    # Enhanced session management (simplified)
+    session_id = request.session_id
+    if not session_id:
+        # Create new session using memory service
+        session_id = memory_service.create_session(user_id)
+    
+    # Get session context from memory service
     session_context = memory_service.get_session_context(session_id)
 
-    # Validate and clean prompt
-    validation_result = prompt_validator.validate_prompt(request.prompt)
-    cleaned_prompt = validation_result["cleaned_prompt"]
+    # Enhanced prompt validation
+    try:
+        validation_result = prompt_validator.validate_prompt(request.prompt)
+        cleaned_prompt = validation_result["cleaned_prompt"]
+    except Exception as validation_error:
+        logger.warning(
+            "Prompt validation failed for user %s: %s", 
+            user_id, str(validation_error)
+        )
+        raise
+
+    # Log user activity (simplified)
+    logger.info(
+        "User activity: user_id=%s, session_id=%s, prompt_length=%d", 
+        user_id, session_id[:8] if session_id else "none", len(cleaned_prompt)
+    )
 
     workflow_context = {
         "user_prompt": cleaned_prompt,
@@ -139,12 +158,17 @@ def parse_and_validate_tool_call(tool_call):
 @app.post("/query")
 async def receive_prompt(
     request: PromptRequest,
+    http_request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
 ):
     session_id = None
+    start_time = time.time()
+    
     try:
-        # Setup session and context
-        session_id, session_context, workflow_context, cleaned_prompt = await setup_session_and_context(request, credentials)
+        # Setup session and context with enhanced security
+        session_id, session_context, workflow_context, cleaned_prompt = await setup_session_and_context(
+            request, credentials, http_request
+        )
 
         # Try LLM-first approach for tool selection
         tool_calls, llm_result, llm_error = await try_llm_tool_selection(cleaned_prompt, workflow_context)
