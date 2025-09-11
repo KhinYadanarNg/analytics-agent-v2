@@ -7,9 +7,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Get JWT secret key from environment and handle newline escapes
+# Get JWT secret key from environment
 jwt_key_from_env = os.getenv("JWT_SECRET_KEY")
-jwt_key_from_env =jwt_key_from_env.replace('\\n', '\n')
 
 ALGORITHM = os.getenv("JWT_ALGORITHM", "RS256")
 

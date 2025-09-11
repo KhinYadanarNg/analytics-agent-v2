@@ -23,7 +23,6 @@ class CommunicationCoordinator:
     def __init__(self):
         self.components = {
             "auth": {"status": ComponentStatus.HEALTHY, "last_check": datetime.now()},
-            "validator": {"status": ComponentStatus.HEALTHY, "last_check": datetime.now()},
             "llm_service": {"status": ComponentStatus.HEALTHY, "last_check": datetime.now()},
             "database_service": {"status": ComponentStatus.HEALTHY, "last_check": datetime.now()},
             "chart_generator": {"status": ComponentStatus.HEALTHY, "last_check": datetime.now()},
@@ -42,7 +41,7 @@ class CommunicationCoordinator:
         """Setup default coordination rules between components."""
         self.coordination_rules = {
             "llm_failure": {
-                "fallback_sequence": ["reasoning_engine", "validator"],
+                "fallback_sequence": ["reasoning_engine"],
                 "degraded_mode": True,
                 "user_notification": "Using fallback mode due to LLM service issues"
             },
@@ -196,11 +195,11 @@ class CommunicationCoordinator:
     
     def _coordinate_validation(self, workflow_plan: Dict[str, Any], 
                              context: Dict[str, Any]) -> Dict[str, Any]:
-        """Coordinate validation step."""
+        """Coordinate validation step - now handled by LLM."""
         return {
             "success": True,
-            "component": "validator",
-            "message": "Validation coordination completed"
+            "component": "llm_service",
+            "message": "Validation handled by LLM service"
         }
     
     def _coordinate_tool_selection(self, workflow_plan: Dict[str, Any], 

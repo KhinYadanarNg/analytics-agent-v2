@@ -10,7 +10,6 @@ from fastapi import FastAPI, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.auth import validate_jwt_token, bearer_scheme
-from app.validator import prompt_validator
 from app.llm_service import llm_service
 from app.memory_service import memory_service
 from app.communication_coordinator import communication_coordinator, ComponentStatus
@@ -64,16 +63,8 @@ async def setup_session_and_context(request: PromptRequest, credentials: HTTPAut
     # Get session context from memory service
     session_context = memory_service.get_session_context(session_id)
 
-    # Enhanced prompt validation
-    try:
-        validation_result = prompt_validator.validate_prompt(request.prompt)
-        cleaned_prompt = validation_result["cleaned_prompt"]
-    except Exception as validation_error:
-        logger.warning(
-            "Prompt validation failed for user %s: %s", 
-            user_id, str(validation_error)
-        )
-        raise
+    # Use the original prompt without pre-validation
+    cleaned_prompt = request.prompt
 
     # Store file references from the original prompt
     import re
@@ -242,6 +233,16 @@ async def receive_prompt(
                     final_fallback["session_id"] = session_id
                     return final_fallback
                 llm_result = final_fallback
+
+        # Check if LLM returned a validation failure for non-analytics requests
+        if llm_result and llm_result.get("success") == False and "message" in llm_result and not llm_error:
+            logger.info("LLM rejected non-analytics request: %s", llm_result.get("message"))
+            memory_service.store_interaction(session_id, cleaned_prompt, "validation_rejected", llm_result)
+            return {
+                "success": False,
+                "message": llm_result["message"],
+                "session_id": session_id
+            }
 
         # Handle case where no tool calls were generated
         if not tool_calls:

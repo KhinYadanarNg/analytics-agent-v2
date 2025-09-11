@@ -2,21 +2,12 @@ tools = [
     {
         "type": "function",
         "function": {
-            "name": "get_records_by_status",
-            "description": "Retrieves records by file name and status.",
+            "name": "list_available_files",
+            "description": "Lists all available data files in the system.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "file_name": {
-                        "type": "string",
-                        "description": "The name of the file, e.g., 'customer.csv'."
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "The status to filter records by, e.g., 'success'."
-                    }
-                },
-                "required": ["file_name", "status"]
+                "properties": {},
+                "required": []
             }
         }
     },
@@ -43,10 +34,3 @@ tools = [
         }
     }
 ]
-
-# Simple function schema mapping (single source of truth for required params)
-function_schemas = {
-    "get_records_by_status": {"required": ["file_name", "status"]},
-    "get_success_rate_by_file_name": {"required": ["file_name"]},
-    "list_available_files": {"required": []}
-}

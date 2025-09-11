@@ -68,7 +68,8 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
                 chart_data=chart_result.get("chart_data", []),
                 title=chart_title,
                 show_only=show_only,
-                total_records=total_records
+                total_records=total_records,
+                file_name=file_name
             )
             # Optionally persist a local copy for debugging
             try:

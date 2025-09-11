@@ -1,304 +1,291 @@
-import openai
-from typing import Dict, Any
+# llm_service.py
+from __future__ import annotations
+
 import json
 import os
-from dotenv import load_dotenv
-from app.tool_schema import tools, function_schemas as TOOL_FUNCTION_SCHEMAS
+import re
+import time
 import logging
+from typing import Dict, Any, List, Optional, TypedDict
 
-# Load environment variables
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from app.tool_schema import  tools as TOOL_FUNCTION_SCHEMAS
+
+# -------------------------------------------------------------------
+# Initialization
+# -------------------------------------------------------------------
+
 load_dotenv()
-
 logger = logging.getLogger("llm_service")
+logger.setLevel(logging.INFO)
 
+# -------------------------------------------------------------------
+# Types
+# -------------------------------------------------------------------
+
+class ExtractResponse(TypedDict, total=False):
+    success: bool
+    tool_calls: List[Dict[str, Any]]
+    llm_response: str
+    clarify: Optional[str]
+    error: Optional[str]
+    message: Optional[str]
+
+# -------------------------------------------------------------------
+# Guardrails (minimal, targeted)
+# -------------------------------------------------------------------
+
+INSTRUCTION_OVERRIDE = re.compile(
+    r"^(?:please\s+)?(?:ignore|disregard|override)\s+(?:all\s+)?(?:previous|above)\s+(?:instructions|messages)",
+    re.IGNORECASE,
+)
+
+ROLE_REASSIGN = re.compile(r"^(?:system:|you are now\s|act as\s)", re.IGNORECASE)
+
+def is_instruction_override(text: str) -> bool:
+    """Block only clear attempts to override system instructions."""
+    t = text.strip()
+    return bool(INSTRUCTION_OVERRIDE.search(t) or ROLE_REASSIGN.search(t))
+
+# Optional: cheap keyword check for when LLM is unavailable
+ANALYTICS_HINTS = (
+    "analytics", "data", "chart", "graph", "success rate", "fail rate",
+    "csv", "table", "record", "statistic", "metric", "report",
+    "list files", "available files", "show data", "show chart", "count", "total"
+)
+
+def looks_like_analytics(text: str) -> bool:
+    t = text.lower()
+    return any(hint in t for hint in ANALYTICS_HINTS)
+
+# -------------------------------------------------------------------
+# Main Service
+# -------------------------------------------------------------------
 
 class LLMService:
     def __init__(self):
-        # Check if OpenAI API key is available
         logger.info("LLMService __init__ called")
 
-        # Database schema context for DynamoDB
+        # Database schema context (for the prompt)
         self.database_schema = """
-            DynamoDB Tables:
+DynamoDB Tables:
 
-            Table: MasterDataHeaderSIT
-                - id (Primary Key, String)
-                - domain_name (String)
-                - file_name (String, GSI: file_name-index)
-                - file_status (String)
-                   
-            Table: MasterDataTaskTrackerSIT
-                - id (Primary Key, String)
-                - file_id (String, GSI: file_id-final_status-index)
-                - final_status (String)
-                - organization_id (String)
-                - rule_status (String)
-            """
+Table: MasterDataHeaderSIT
+  - id (PK, String)
+  - domain_name (String)
+  - file_name (String, GSI: file_name-index)
+  - file_status (String)
+
+Table: MasterDataTaskTrackerSIT
+  - id (PK, String)
+  - file_id (String, GSI: file_id-final_status-index)
+  - final_status (String)
+  - organization_id (String)
+  - rule_status (String)
+""".strip()
+
+        # OpenAI client (optional)
         api_key = os.getenv("OPENAI_API_KEY")
-        if api_key:
-            try:
-                self.client = openai.OpenAI(api_key=api_key)
-                self.use_llm = True
-                logger.info("OpenAI API key found; LLM client initialized.")
-            except Exception as e:
-                self.client = None
-                self.use_llm = False
-                logger.exception("Failed to initialize OpenAI client: %s", e)
-        else:
+        try:
+            self.client = OpenAI(api_key=api_key) if api_key else None
+            self.use_llm = bool(self.client)
+            if self.use_llm:
+                logger.info("OpenAI client initialized.")
+            else:
+                logger.warning("OPENAI_API_KEY not set. Falling back to local mock routing if needed.")
+        except Exception as e:
+            logger.exception("Failed to initialize OpenAI client: %s", e)
             self.client = None
             self.use_llm = False
-            logger.warning("OpenAI API key not found. Using mock responses for demo.")
 
-        # Use tool_schema as single source of truth for required params
-        self.function_schemas = TOOL_FUNCTION_SCHEMAS
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # configurable default
+        self.function_schemas = TOOL_FUNCTION_SCHEMAS          # single source of truth
 
-    def extractPrompt(self, user_prompt: str) -> Dict[str, Any]:
-        """Convert user prompt to tool calls using LLM or provide a mock response.
+    # -------------------------------
+    # Helpers
+    # -------------------------------
 
-        Returns a dict with keys: success (bool), tool_calls (list) and llm_response (str) on success.
-        """
-        # Defensive check for database_schema
-        if not getattr(self, "database_schema", None):
-            raise AttributeError("LLMService instance is missing 'database_schema'. Ensure __init__ was called.")
+    def _error(self, msg: str) -> ExtractResponse:
+        return {"success": False, "error": msg, "llm_response": ""}
 
-        # Pre-send sanitizer: detect common prompt-injection patterns and refuse/clarify
-        try:
-            import re
+    def _system_prompt(self) -> str:
+        # NOTE: No duplicate schema here; rely solely on TOOL_FUNCTION_SCHEMAS for validation
+        return f"""You are a specialized analytics agent.
 
-            injection_patterns = [
-                r"(?i)ignore (previous|above|instructions)",
-                r"(?i)disregard (previous|instructions)",
-                r"(?i)from now on",
-                r"(?i)you are now",
-                r"(?i)act as",
-                r"(?i)^system:",
-                r"```",
-                r"(?i)api key|secret|password|private key|ssh key"
-            ]
+You MUST do one of two things:
+1) If the user's request is about analytics (data analysis, charts, success/fail rates, file data, statistics, visualizations),
+   call exactly one or more of the available tools with correct parameters.
+2) If the request is NOT analytics, reply EXACTLY with this JSON (no extra text):
+{{"success": false, "message": "This is a specialized analytics agent. Please ask questions about data analysis, success rates, charts, or file data."}}
 
-            for p in injection_patterns:
-                if re.search(p, user_prompt):
-                    logger.warning("Prompt appears to contain injection patterns: %s", p)
-                    return {
-                        "success": False,
-                        "clarify": "Your request contains content that looks like an attempt to override system instructions or exfiltrate secrets. Please remove those parts and re-submit."
-                    }
-        except Exception:
-            # if sanitizer fails, continue but log
-            logger.exception("Sanitizer failed unexpectedly")
+Parameter rules:
+- If user asks "success rate" (singular) → show_only="success"
+- If user asks "fail rate" → show_only="fail"
+- If user asks "rates" (plural) or "both" → show_only="both"
 
-        if not self.use_llm or not self.client:
-            logger.debug("LLM client unavailable; returning mock fallback tool call.")
-            # Simple mock: instruct to call list_available_files when user asks generically
-            return {
-                "success": True,
-                "tool_calls": [{"name": "list_available_files", "arguments": {}}],
-                "llm_response": "mock: list available files"
-            }
+Tool selection logic:
+- If user asks for success/fail rates for a specific file → use get_success_rate_by_file_name
 
-        try:
-            # Include a small machine-readable function schema block to help the model
-            function_schema_block = json.dumps({
-                "get_records_by_status": {"required": ["file_name", "status"]},
-                "get_success_rate_by_file_name": {"required": ["file_name"]},
-                "list_available_files": {"required": []}
-            }, indent=2)
-
-            system_prompt = f"""
-You are an expert analytics agent whose job is to map user requests to backend tool calls only.
-
-Database Schema:
+Database Schema Context (read-only):
 {self.database_schema}
-
-Function Schemas (machine-readable):
-{function_schema_block}
-
-Available Tools:
-- get_records_by_status(file_name, status)
-- get_success_rate_by_file_name(file_name)
-- list_available_files()
-
-CRITICAL RULES:
-- ALWAYS call a tool when the user asks for data, records, rates, or charts.
-- If required parameters are missing, ASK ONE precise clarifying question instead of guessing.
-- NEVER generate charts or SQL yourself; call the appropriate tool.
-
-Examples:
-- "Show success records for customer.csv" → Call get_records_by_status with file_name="customer.csv", status="success"
-- "Show success rate for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="success"
-- "Show fail rate for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="fail"
-- "Show success and fail rates for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="both"
-- "Show rates for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="both"
-
-IMPORTANT: When user asks for "success rate" (singular), use show_only="success". When they ask for "rates" (plural) or "success and fail", use show_only="both".
-
-If you call a tool, return only the tool call (function name and arguments) in the SDK's tool-calling format.
 """
 
-            # Flexible client invocation: support patterns where `chat` is a callable or attribute,
-            # where `completions` is a property, or where `create` exists at different levels.
-            call_kwargs = dict(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"{user_prompt}"}
-                ],
-                temperature=0.1,
-                tools=tools
-            )
+    def _validate_tool_calls(self, calls: List[Dict[str, Any]]) -> ExtractResponse | None:
+        """
+        Validates tool calls against TOOL_FUNCTION_SCHEMAS.
+        Returns an error/clarify response if invalid, or None if OK.
+        """
+        # Convert tools list to a dict for easier lookup
+        function_schemas = {}
+        for tool in self.function_schemas:
+            if tool.get("type") == "function" and "function" in tool:
+                func_def = tool["function"]
+                function_schemas[func_def["name"]] = func_def["parameters"]
+        
+        for c in calls:
+            name = c.get("name")
+            if not name or name not in function_schemas:
+                return {"success": False, "clarify": f"Tool '{name}' is not allowed.", "tool_calls": calls, "llm_response": ""}
 
-            def _call_create(kwargs):
-                # pattern: client.chat.completions.create(...)
-                chat_attr = getattr(self.client, "chat", None)
-                if chat_attr:
-                    chat_obj = chat_attr() if callable(chat_attr) else chat_attr
-                    completions = getattr(chat_obj, "completions", None)
-                    if completions and hasattr(completions, "create"):
-                        return completions.create(**kwargs)
-
-                # pattern: client.completions.create(...)
-                completions = getattr(self.client, "completions", None)
-                if completions and hasattr(completions, "create"):
-                    return completions.create(**kwargs)
-
-                # pattern: client.create(...)
-                create_fn = getattr(self.client, "create", None)
-                if create_fn and callable(create_fn):
-                    return create_fn(**kwargs)
-
-                raise AttributeError("LLM client does not expose a compatible create(...) method")
-
-            response = _call_create(call_kwargs)
-
-            # Parse the response
-            content = response.choices[0].message.content
-            raw_tool_calls = getattr(response.choices[0].message, "tool_calls", None)
-            logger.debug("Parsed LLM content: %s", content)
-            logger.debug("raw_tool_calls: %s", raw_tool_calls)
-
-            # Normalize tool call shapes into canonical dicts: {name: str, arguments: dict}
-            def _normalize_tool_call(tc):
-                # OpenAI function-like shape
-                if isinstance(tc, dict) and tc.get("function"):
-                    fn = tc["function"]
-                    return {"name": fn.get("name"), "arguments": fn.get("arguments", {})}
-
-                # Flat dict shape
-                if isinstance(tc, dict) and tc.get("name"):
-                    return {"name": tc.get("name"), "arguments": tc.get("arguments", tc.get("args", {}))}
-
-                # Some SDKs return objects with attributes
-                if hasattr(tc, "function"):
-                    fn = tc.function
-                    args = getattr(fn, "arguments", {})
-                    name = getattr(fn, "name", None)
-                    return {"name": name, "arguments": args}
-
-                # Fallback: try to coerce
+            required = function_schemas[name].get("required", [])
+            args = c.get("arguments") or {}
+            # If args are a JSON string, parse safely here as well
+            if isinstance(args, str):
                 try:
-                    return {"name": tc["name"], "arguments": tc.get("arguments", {})}
-                except Exception:
-                    return {"name": str(tc), "arguments": {}}
+                    args = json.loads(args)
+                    c["arguments"] = args
+                except json.JSONDecodeError:
+                    return {"success": False, "clarify": f"Invalid arguments for '{name}' (must be JSON).", "tool_calls": calls, "llm_response": ""}
 
-            tool_calls = []
-            if raw_tool_calls:
-                for rtc in raw_tool_calls:
-                    tool_calls.append(_normalize_tool_call(rtc))
+            for r in required:
+                if r not in args or args[r] in (None, ""):
+                    return {"success": False, "clarify": f"Which {r} do you mean for {name}?", "tool_calls": calls, "llm_response": ""}
 
-            # Validator: ensure required params are present for each tool
-            def _validate_tool_calls(tcs):
-                missing = []
-                suspicious_args = []
-                for tc in tcs:
-                    name = tc.get("name")
-                    # Reject unknown tools immediately
-                    if name not in self.function_schemas:
-                        return False, f"Tool '{name}' is not allowed."
-                    schema = self.function_schemas.get(name, {})
-                    required = schema.get("required", [])
-                    
-                    # Ensure args is a dictionary, parse if it's a JSON string
-                    raw_args = tc.get("arguments") or {}
-                    if isinstance(raw_args, str):
-                        try:
-                            args = json.loads(raw_args)
-                        except json.JSONDecodeError:
-                            logger.warning("Invalid JSON in tool arguments: %s", raw_args)
-                            args = {}
-                    else:
-                        args = raw_args or {}
-                    
-                    # Check required parameters
-                    for r in required:
-                        if r not in args or args.get(r) in (None, ""):
-                            missing.append((name, r))
-                    
-                    # Check args for suspicious content
-                    for k, v in args.items():
-                        if isinstance(v, str):
-                            low = v.lower()
-                            if any(tok in low for tok in ("rm -rf", "sudo", "exec", "openai_api_key", "api_key", "private key", "ssh key", "delete all", "drop table")):
-                                suspicious_args.append((name, k, v))
-                            # multi-line payloads or embedded instructions are suspicious
-                            if "\n" in v and len(v.splitlines()) > 3:
-                                suspicious_args.append((name, k, v))
-                
-                if missing:
-                    # Return a single precise clarifying question for the first missing param
-                    name, param = missing[0]
-                    question = f"Which {param} do you mean for {name}?"
-                    return False, question
-                if suspicious_args:
-                    name, k, v = suspicious_args[0]
-                    return False, f"Argument '{k}' for tool '{name}' contains suspicious content and was rejected."
-                return True, None
+            # Optional: basic suspicious payload guard (lightweight)
+            for k, v in args.items():
+                if isinstance(v, str):
+                    lowered = v.lower()
+                    if any(tok in lowered for tok in ("rm -rf", "drop table", "shutdown", "format c:", "curl ")):
+                        return {"success": False, "clarify": f"Argument '{k}' for tool '{name}' looks unsafe.", "tool_calls": calls, "llm_response": ""}
 
-            valid, clarify_question = _validate_tool_calls(tool_calls)
-            if not valid:
-                logger.info("Tool call missing required params, asking clarifying question: %s", clarify_question)
-                return {
-                    "success": False,
-                    "clarify": clarify_question,
-                    "tool_calls": tool_calls,
-                    "llm_response": content
-                }
+        return None  # Valid
 
-            if tool_calls:
-                return {
-                    "success": True,
-                    "tool_calls": tool_calls,
-                    "llm_response": content
-                }
-            else:
-                logger.warning("No tool calls detected from LLM.")
-                return {
-                    "success": False,
-                    "error": "LLM did not call any tools",
-                    "llm_response": content,
-                    "message": "Unable to understand your request. Please ask for data records or success rates for a specific file."
-                }
+    # -------------------------------
+    # Public API
+    # -------------------------------
 
-        except Exception as e:
-            logger.exception("Error while calling LLM: %s", e)
+    def extractPrompt(self, user_prompt: str) -> ExtractResponse:
+        """
+        Returns:
+          {"success": True, "tool_calls": [...], "llm_response": "<model content>"} on success
+          or {"success": False, "message": "..."} if non-analytics, per contract
+          or {"success": False, "clarify": "..."} when params missing
+          or {"success": False, "error": "..."} on internal errors
+        """
+        if not getattr(self, "database_schema", None):
+            return self._error("Service not initialized: missing database schema.")
+
+        if is_instruction_override(user_prompt):
             return {
                 "success": False,
-                "error": str(e),
-                "fallback_response": "Error processing the request."
+                "clarify": "Your message appears to override system instructions. Please rephrase your analytics request.",
+                "llm_response": ""
             }
+
+        # If LLM unavailable → local behavior
+        if not self.use_llm:
+            if looks_like_analytics(user_prompt):
+                # Smarter mock routing based on request content
+                prompt_lower = user_prompt.lower()
+                
+                # Check if asking for success rate for a specific file
+                if ("success rate" in prompt_lower or "fail rate" in prompt_lower) and "for file" in prompt_lower:
+                    # Extract file name from the prompt
+                    import re
+                    file_match = re.search(r"for file\s+['\"]?([^'\"]+)['\"]?", prompt_lower)
+                    if file_match:
+                        file_name = file_match.group(1).strip()
+                        show_only = "success" if "success rate" in prompt_lower and "fail rate" not in prompt_lower else "both"
+                        return {
+                            "success": True,
+                            "tool_calls": [{"name": "get_success_rate_by_file_name", "arguments": {"file_name": file_name, "show_only": show_only}}],
+                            "llm_response": f"mock: get success rate for {file_name}"
+                        }
+                
+            return {
+                "success": False,
+                "message": "This is a specialized analytics agent. Please ask questions about data analysis, success rates, charts, or file data."
+            }
+
+        # LLM path
+        start = time.time()
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._system_prompt()},
+                    {"role": "user", "content": user_prompt}
+                ],
+                tools=TOOL_FUNCTION_SCHEMAS,
+                temperature=0.1,
+                # Some SDKs do not support 'timeout' directly on create; if so, wrap in your own timeout.
+            )
+        except Exception as e:
+            logger.exception("LLM call failed")
+            return self._error(f"LLM call failed: {e}")
+
+        latency_ms = int((time.time() - start) * 1000)
+        logger.info("llm_latency_ms=%d model=%s", latency_ms, self.model)
+
+        choice = resp.choices[0]
+        msg = choice.message
+        content = (msg.content or "").strip()
+        tool_calls_raw = msg.tool_calls or []
+
+        # If model returned the JSON “not analytics” message, pass through untouched
+        if content.startswith("{") and '"success"' in content:
+            try:
+                parsed = json.loads(content)
+                if parsed.get("success") is False and "message" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Normalize tool calls to canonical shape
+        norm_calls: List[Dict[str, Any]] = []
+        for tc in tool_calls_raw:
+            try:
+                name = tc.function.name
+                args_str = tc.function.arguments or "{}"
+                args = json.loads(args_str) if isinstance(args_str, str) else (args_str or {})
+                norm_calls.append({"name": name, "arguments": args})
+            except Exception:
+                norm_calls.append({"name": getattr(tc.function, "name", None), "arguments": {}})
+
+        # Validate against TOOL_FUNCTION_SCHEMAS
+        invalid = self._validate_tool_calls(norm_calls)
+        if invalid:  # returns an error/clarify envelope
+            return invalid
+
+        if norm_calls:
+            return {"success": True, "tool_calls": norm_calls, "llm_response": content}
+
+        # No tool calls and no structured rejection → ask for clarification
+        return {
+            "success": False,
+            "llm_response": content,
+            "clarify": "Please ask for data records, success/fail rates, or available files (e.g., 'Show success rate for file X')."
+        }
 
     def respond_with_chart(self, query_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Accepts the query result from the database and validates it for chart generation.
-
-        Ensures chart_type and chart_data are present for downstream charting components.
         """
-        if "chart_type" not in query_result or "chart_data" not in query_result:
-            return {
-                "success": False,
-                "error": "Invalid query result format.",
-                "fallback_response": "Error processing the request."
-            }
+        Validates the presence of chart_type and chart_data.
+        """
+        if not {"chart_type", "chart_data"} <= set(query_result):
+            return {"success": False, "error": "Invalid query result format.", "fallback_response": "Error processing the request."}
         return query_result
 
-
-# Initialize LLM service
+# Instantiate for importers
 llm_service = LLMService()

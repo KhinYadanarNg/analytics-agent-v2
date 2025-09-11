@@ -7,7 +7,7 @@ matplotlib.use('Agg')  # Use non-interactive backend
 
 class ChartGenerator:
     @staticmethod
-    def generate_bar_chart_base64(chart_data: List[Dict[str, Any]], title: str = "Success/Fail Rate", show_only: str = "both", total_records: int = None) -> str:
+    def generate_bar_chart_base64(chart_data: List[Dict[str, Any]], title: str = "Success/Fail Rate", show_only: str = "both", total_records: int = None, file_name: str = None) -> str:
         """
         Generate a bar chart from chart data and return as base64 string.
         
@@ -16,6 +16,7 @@ class ChartGenerator:
             title: Chart title
             show_only: Filter to show only specific status ('success', 'fail', or 'both')
             total_records: Total number of records to display in the chart
+            file_name: Name of the file being analyzed
             
         Returns:
             Base64 encoded PNG image string
@@ -29,51 +30,102 @@ class ChartGenerator:
         
         # Filter chart data based on show_only parameter
         if show_only != "both":
-            chart_data = [item for item in chart_data if item.get("status", "").lower() == show_only.lower()]
-            if not chart_data:
-                return ChartGenerator._generate_empty_chart_base64(f"No {show_only} data available")
+            filtered_data = [item for item in chart_data if item.get("status", "").lower() == show_only.lower()]
+            if not filtered_data:
+                # If no data exists for the requested status, create a 0% entry
+                # This handles cases where we want to show "0% success" instead of "No data"
+                filtered_data = [{"status": show_only, "percentage": 0.0, "count": 0}]
+            chart_data = filtered_data
         
         # Extract data for plotting
         labels = [item.get("status", "Unknown") for item in chart_data]
         percentages = [item.get("percentage", 0) for item in chart_data]
         counts = [item.get("count", 0) for item in chart_data]
         
-        # Create the plot
-        plt.figure(figsize=(10, 7))  # Slightly larger to accommodate total records
-        colors = ['#2E8B57' if label.lower() == 'success' else '#DC143C' for label in labels]
+        # Create the plot with better sizing
+        plt.figure(figsize=(12, 8))
         
-        bars = plt.bar(labels, percentages, color=colors, alpha=0.7, edgecolor='black', linewidth=1)
+        # Define colors to match your image
+        colors = []
+        for label in labels:
+            if label.lower() == 'success':
+                colors.append('#4CAF50')  # Green for success
+            elif label.lower() == 'fail':
+                colors.append('#E91E63')  # Pink for fail (matching your image)
+            else:
+                colors.append('#9E9E9E')  # Gray for unknown
         
-        # Add value labels on bars
+        # Ensure 0% bars are visible by giving them minimum height
+        display_percentages = []
+        for p in percentages:
+            if p == 0:
+                display_percentages.append(0.5)  # Minimum visible height for 0% bars
+            else:
+                display_percentages.append(p)
+        
+        bars = plt.bar(labels, display_percentages, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+        
+        # Add value labels on bars with better formatting
         for i, (bar, count, percentage) in enumerate(zip(bars, counts, percentages)):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
-                    f'{percentage}%\n({count} records)', 
-                    ha='center', va='bottom', fontsize=10, fontweight='bold')
-        
-        plt.ylabel('Percentage (%)', fontsize=12, fontweight='bold')
-        plt.xlabel('Status', fontsize=12, fontweight='bold')
-        
-        # Enhanced title with total records
-        if total_records is not None:
-            enhanced_title = f"{title}\nTotal Records: {total_records:,}"
-        else:
-            enhanced_title = title
+            # For 0% bars, position text higher to make it visible
+            if percentage == 0:
+                y_position = 2  # Position above the x-axis
+                va_alignment = 'bottom'
+            else:
+                y_position = bar.get_height() + 0.5
+                va_alignment = 'bottom'
             
-        plt.title(enhanced_title, fontsize=14, fontweight='bold', pad=25)
-        plt.ylim(0, max(percentages) * 1.2 if percentages else 100)
+            plt.text(bar.get_x() + bar.get_width()/2, y_position,
+                    f'{percentage:.1f}%\n({count} records)', 
+                    ha='center', va=va_alignment, fontsize=12, fontweight='bold')
         
-        # Add total records as text annotation in the top-right corner
+        plt.ylabel('Percentage (%)', fontsize=14, fontweight='bold')
+        plt.xlabel('Status', fontsize=14, fontweight='bold')
+        
+        # Create dynamic title based on show_only and file_name
+        if file_name:
+            if show_only == "success":
+                chart_title = f"Success Rate for {file_name}"
+            elif show_only == "fail":
+                chart_title = f"Fail Rate for {file_name}"
+            else:
+                chart_title = f"Success/Fail Rate for {file_name}"
+        else:
+            chart_title = title
+        
+        # Enhanced title with total records subtitle
         if total_records is not None:
-            plt.text(0.98, 0.95, f"Total: {total_records:,} records", 
+            full_title = f"{chart_title}\nTotal Records: {total_records:,}"
+        else:
+            full_title = chart_title
+            
+        plt.title(full_title, fontsize=16, fontweight='bold', pad=30)
+        
+        # Fix y-axis limits to ensure 0% bars are visible
+        max_percentage = max(percentages) if percentages else 0
+        if max_percentage == 0:
+            # When all percentages are 0, set a reasonable y-axis limit
+            plt.ylim(0, 10)  # Show 0-10% range so 0% bars are visible
+        else:
+            plt.ylim(0, max_percentage * 1.2)
+        
+        # Add total records box in top-right corner (matching your image style)
+        if total_records is not None:
+            plt.text(0.97, 0.92, f"Total: {total_records:,} records", 
                     transform=plt.gca().transAxes, 
                     ha='right', va='top',
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7),
-                    fontsize=11, fontweight='bold')
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgray', 
+                             edgecolor='black', alpha=0.9),
+                    fontsize=12, fontweight='bold')
         
-        # Add grid for better readability
-        plt.grid(axis='y', alpha=0.3)
+        # Add subtle grid for better readability
+        plt.grid(axis='y', alpha=0.3, linestyle='--')
         
-        # Improve layout
+        # Improve layout and styling
+        plt.gca().spines['top'].set_visible(False)
+        plt.gca().spines['right'].set_visible(False)
+        plt.gca().spines['left'].set_linewidth(1.5)
+        plt.gca().spines['bottom'].set_linewidth(1.5)
         plt.tight_layout()
         
         # Convert to base64
