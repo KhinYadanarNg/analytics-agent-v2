@@ -7,19 +7,26 @@ matplotlib.use('Agg')  # Use non-interactive backend
 
 class ChartGenerator:
     @staticmethod
-    def generate_bar_chart_base64(chart_data: List[Dict[str, Any]], title: str = "Success/Fail Rate") -> str:
+    def generate_bar_chart_base64(chart_data: List[Dict[str, Any]], title: str = "Success/Fail Rate", show_only: str = "both") -> str:
         """
         Generate a bar chart from chart data and return as base64 string.
         
         Args:
             chart_data: List of dicts with 'status', 'percentage', 'count' keys
             title: Chart title
+            show_only: Filter to show only specific status ('success', 'fail', or 'both')
             
         Returns:
             Base64 encoded PNG image string
         """
         if not chart_data:
             return ChartGenerator._generate_empty_chart_base64("No data available")
+        
+        # Filter chart data based on show_only parameter
+        if show_only != "both":
+            chart_data = [item for item in chart_data if item.get("status", "").lower() == show_only.lower()]
+            if not chart_data:
+                return ChartGenerator._generate_empty_chart_base64(f"No {show_only} data available")
         
         # Extract data for plotting
         labels = [item.get("status", "Unknown") for item in chart_data]

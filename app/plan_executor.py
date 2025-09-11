@@ -38,6 +38,8 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
     # Success rate -> chart
     if tool_name == "get_success_rate_by_file_name":
         file_name = tool_args.get("file_name")
+        show_only = tool_args.get("show_only", "both")  # Default to showing both
+        
         file_id = await db_service.get_file_id_by_name(file_name)
         if not file_id:
             return {
@@ -51,9 +53,18 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
 
         # Generate chart image using matplotlib with error handling
         try:
+            # Determine chart title based on filter
+            if show_only == "success":
+                chart_title = f"Success Rate for {file_name}"
+            elif show_only == "fail":
+                chart_title = f"Fail Rate for {file_name}"
+            else:
+                chart_title = f"Success/Fail Rate for {file_name}"
+            
             chart_base64 = chart_generator.generate_bar_chart_base64(
                 chart_data=chart_result.get("chart_data", []),
-                title=f"Success/Fail Rate for {file_name}"
+                title=chart_title,
+                show_only=show_only
             )
             # Optionally persist a local copy for debugging
             try:

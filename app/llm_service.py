@@ -125,7 +125,12 @@ CRITICAL RULES:
 
 Examples:
 - "Show success records for customer.csv" → Call get_records_by_status with file_name="customer.csv", status="success"
-- "Show success rate for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv"
+- "Show success rate for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="success"
+- "Show fail rate for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="fail"
+- "Show success and fail rates for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="both"
+- "Show rates for customer_sample_values.csv" → Call get_success_rate_by_file_name with file_name="customer_sample_values.csv", show_only="both"
+
+IMPORTANT: When user asks for "success rate" (singular), use show_only="success". When they ask for "rates" (plural) or "success and fail", use show_only="both".
 
 If you call a tool, return only the tool call (function name and arguments) in the SDK's tool-calling format.
 """
