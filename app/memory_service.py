@@ -116,23 +116,58 @@ class ConversationMemory:
             return prompt
         
         import re
-        # Patterns to match file references
+        
+        # Enhanced patterns to match file references with better context awareness
         file_reference_patterns = [
+            # Direct file references
             (r'\bthat file\b', f"'{last_file}'"),
             (r'\bthe file\b', f"'{last_file}'"),
             (r'\bthis file\b', f"'{last_file}'"),
             (r'\bsame file\b', f"'{last_file}'"),
             (r'\bprevious file\b', f"'{last_file}'"),
-            (r'\bit\b(?=.*(?:rate|analysis|data))', f"'{last_file}'"),  # 'it' in data context
+            (r'\blast file\b', f"'{last_file}'"),
+            
+            # Contextual references
+            (r'\bit\b(?=.*(?:rate|analysis|data|success|fail|record))', f"'{last_file}'"),  # 'it' in data context
+            (r'\bthat\b(?=.*(?:csv|data|dataset|file))', f"'{last_file}'"),  # 'that' referring to data
+            
+            # Pattern for "for that file" or similar
+            (r'\bfor that\b(?!\s+file)', f"for '{last_file}'"),  # "show me success rate for that" 
+            
+            # More specific patterns
+            (r'\bthe same\b(?=.*(?:csv|data|dataset))', f"'{last_file}'"),
+            (r'\bagain\b(?=.*(?:file|csv|data))', f"'{last_file}' again"),
         ]
         
         updated_prompt = prompt
+        replacements_made = []
+        
         for pattern, replacement in file_reference_patterns:
             if re.search(pattern, updated_prompt, re.IGNORECASE):
+                old_prompt = updated_prompt
                 updated_prompt = re.sub(pattern, replacement, updated_prompt, flags=re.IGNORECASE)
-                print(f"DEBUG: Resolved '{pattern}' -> '{replacement}' in session {session_id}")
+                if old_prompt != updated_prompt:
+                    replacements_made.append((pattern, replacement))
+                    print(f"DEBUG: Resolved '{pattern}' -> '{replacement}' in session {session_id}")
         
-        if updated_prompt == prompt:
+        # If no direct pattern matches but the prompt seems to be asking about data
+        # and doesn't contain a specific file name, try a more general approach
+        if updated_prompt == prompt and not re.search(r'\.csv|file\s+[\'"]', prompt, re.IGNORECASE):
+            # Check if this looks like a data analysis request without explicit file reference
+            data_analysis_indicators = [
+                r'success\s+rate', r'analysis', r'data', r'records?', r'show\s+me',
+                r'analyze', r'chart', r'graph', r'statistics'
+            ]
+            
+            if any(re.search(indicator, prompt, re.IGNORECASE) for indicator in data_analysis_indicators):
+                # Add the file reference to the end of the prompt
+                updated_prompt = f"{prompt} for '{last_file}'"
+                replacements_made.append(("implicit_context", f"for '{last_file}'"))
+                print(f"DEBUG: Added implicit file context to prompt in session {session_id}")
+        
+        if replacements_made:
+            print(f"DEBUG: Final resolved prompt: '{updated_prompt}'")
+        else:
             print(f"DEBUG: No file references found in prompt: '{prompt}'")
         
         return updated_prompt

@@ -306,11 +306,6 @@ async def receive_prompt(
         }
 
 
-
-
-
-# Executor functions have been moved to `app.plan_executor` for separation of concerns.
-
 @app.get("/health")
 async def health_check():
     system_health = communication_coordinator.get_system_health()
