@@ -92,6 +92,50 @@ class ConversationMemory:
             del self.sessions[session_id]
         
         return len(sessions_to_remove)
+    
+    def store_file_reference(self, session_id: str, file_name: str):
+        """Store file reference in session context."""
+        if session_id not in self.sessions:
+            return False
+        
+        clean_file_name = file_name.strip("'\"")
+        self.sessions[session_id]["context"]["last_file_queried"] = clean_file_name
+        return True
+    
+    def resolve_file_reference(self, session_id: str, prompt: str) -> str:
+        """Resolve file references like 'that file', 'the file', etc."""
+        if session_id not in self.sessions:
+            print(f"DEBUG: Session {session_id} not found in memory")
+            return prompt
+        
+        last_file = self.sessions[session_id]["context"].get("last_file_queried")
+        print(f"DEBUG: Session {session_id} last_file_queried: {last_file}")
+        
+        if not last_file:
+            print(f"DEBUG: No last file found for session {session_id}")
+            return prompt
+        
+        import re
+        # Patterns to match file references
+        file_reference_patterns = [
+            (r'\bthat file\b', f"'{last_file}'"),
+            (r'\bthe file\b', f"'{last_file}'"),
+            (r'\bthis file\b', f"'{last_file}'"),
+            (r'\bsame file\b', f"'{last_file}'"),
+            (r'\bprevious file\b', f"'{last_file}'"),
+            (r'\bit\b(?=.*(?:rate|analysis|data))', f"'{last_file}'"),  # 'it' in data context
+        ]
+        
+        updated_prompt = prompt
+        for pattern, replacement in file_reference_patterns:
+            if re.search(pattern, updated_prompt, re.IGNORECASE):
+                updated_prompt = re.sub(pattern, replacement, updated_prompt, flags=re.IGNORECASE)
+                print(f"DEBUG: Resolved '{pattern}' -> '{replacement}' in session {session_id}")
+        
+        if updated_prompt == prompt:
+            print(f"DEBUG: No file references found in prompt: '{prompt}'")
+        
+        return updated_prompt
 
 # Initialize memory service
 memory_service = ConversationMemory()

@@ -6,7 +6,7 @@ import time
 logging.basicConfig(level=logging.INFO)
 
 from typing import Optional
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.auth import validate_jwt_token, bearer_scheme
@@ -36,13 +36,30 @@ async def setup_session_and_context(request: PromptRequest, credentials: HTTPAut
     # JWT validation
     user = validate_jwt_token(credentials)
     org_id = user.get("orgId")
-    user_id = user.get("sub", "anonymous")
+    user_id = user.get("userId")
     
-    # Enhanced session management (simplified)
-    session_id = request.session_id
-    if not session_id:
-        # Create new session using memory service
+    # Session management with cookie support
+    session_id = None
+    
+    # Priority order: 1. Request body, 2. Cookie, 3. Create new
+    if request.session_id:
+        session_id = request.session_id
+        logger.info(f"Using session_id from request body: {session_id}")
+    else:
+        # Try to get session_id from cookie
+        cookie_session_id = http_request.cookies.get("analytics_session_id")
+        if cookie_session_id:
+            session_id = cookie_session_id
+            logger.info(f"Using session_id from cookie: {session_id}")
+        else:
+            # Create new session
+            session_id = memory_service.create_session(user_id)
+            logger.info(f"Created new session_id: {session_id}")
+    
+    # Ensure session exists in memory
+    if session_id not in memory_service.sessions:
         session_id = memory_service.create_session(user_id)
+        logger.info(f"Session not found, created new session_id: {session_id}")
     
     # Get session context from memory service
     session_context = memory_service.get_session_context(session_id)
@@ -57,6 +74,24 @@ async def setup_session_and_context(request: PromptRequest, credentials: HTTPAut
             user_id, str(validation_error)
         )
         raise
+
+    # Store file references from the original prompt
+    import re
+    file_pattern = r"['\"]([^'\"]*\.csv)['\"]|(\w+\.csv)"
+    file_matches = re.findall(file_pattern, cleaned_prompt)
+    
+    for match in file_matches:
+        file_name = match[0] or match[1]  # Get non-empty group
+        if file_name:
+            memory_service.store_file_reference(session_id, file_name)
+            logger.info(f"Stored file reference: {file_name} for session {session_id}")
+
+    # Resolve file references in the prompt
+    resolved_prompt = memory_service.resolve_file_reference(session_id, cleaned_prompt)
+    
+    if resolved_prompt != cleaned_prompt:
+        logger.info(f"Resolved prompt: '{cleaned_prompt}' -> '{resolved_prompt}'")
+        cleaned_prompt = resolved_prompt
 
     # Log user activity (simplified)
     logger.info(
@@ -159,6 +194,7 @@ def parse_and_validate_tool_call(tool_call):
 async def receive_prompt(
     request: PromptRequest,
     http_request: Request,
+    response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
 ):
     session_id = None
@@ -168,6 +204,16 @@ async def receive_prompt(
         # Setup session and context with enhanced security
         session_id, session_context, workflow_context, cleaned_prompt = await setup_session_and_context(
             request, credentials, http_request
+        )
+        
+        # Set session cookie for frontend
+        response.set_cookie(
+            key="analytics_session_id",
+            value=session_id,
+            max_age=3600,  # 1 hour
+            httponly=True,
+            secure=True,  # Use in production with HTTPS
+            samesite="lax"
         )
 
         # Try LLM-first approach for tool selection
@@ -269,4 +315,28 @@ async def health_check():
     system_health = communication_coordinator.get_system_health()
     return {
         "status": "healthy" 
+    }
+
+# Debug endpoints for testing file reference resolution
+@app.get("/debug/memory/{session_id}")
+async def debug_memory(session_id: str):
+    """Debug endpoint to check session memory"""
+    return memory_service.get_session_context(session_id)
+
+@app.post("/debug/resolve")
+async def debug_resolve(request: dict):
+    """Debug endpoint to test prompt resolution"""
+    session_id = request.get("session_id")
+    prompt = request.get("prompt")
+    
+    # Store a test file reference first if provided
+    test_file = request.get("test_file")
+    if test_file:
+        memory_service.store_file_reference(session_id, test_file)
+    
+    resolved = memory_service.resolve_file_reference(session_id, prompt)
+    return {
+        "original": prompt,
+        "resolved": resolved,
+        "session_context": memory_service.get_session_context(session_id)
     }
