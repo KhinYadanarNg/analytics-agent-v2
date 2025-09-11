@@ -7,7 +7,7 @@ matplotlib.use('Agg')  # Use non-interactive backend
 
 class ChartGenerator:
     @staticmethod
-    def generate_bar_chart_base64(chart_data: List[Dict[str, Any]], title: str = "Success/Fail Rate", show_only: str = "both") -> str:
+    def generate_bar_chart_base64(chart_data: List[Dict[str, Any]], title: str = "Success/Fail Rate", show_only: str = "both", total_records: int = None) -> str:
         """
         Generate a bar chart from chart data and return as base64 string.
         
@@ -15,12 +15,17 @@ class ChartGenerator:
             chart_data: List of dicts with 'status', 'percentage', 'count' keys
             title: Chart title
             show_only: Filter to show only specific status ('success', 'fail', or 'both')
+            total_records: Total number of records to display in the chart
             
         Returns:
             Base64 encoded PNG image string
         """
         if not chart_data:
             return ChartGenerator._generate_empty_chart_base64("No data available")
+        
+        # Calculate total records from chart data if not provided
+        if total_records is None:
+            total_records = sum(item.get("count", 0) for item in chart_data)
         
         # Filter chart data based on show_only parameter
         if show_only != "both":
@@ -34,7 +39,7 @@ class ChartGenerator:
         counts = [item.get("count", 0) for item in chart_data]
         
         # Create the plot
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(10, 7))  # Slightly larger to accommodate total records
         colors = ['#2E8B57' if label.lower() == 'success' else '#DC143C' for label in labels]
         
         bars = plt.bar(labels, percentages, color=colors, alpha=0.7, edgecolor='black', linewidth=1)
@@ -47,8 +52,23 @@ class ChartGenerator:
         
         plt.ylabel('Percentage (%)', fontsize=12, fontweight='bold')
         plt.xlabel('Status', fontsize=12, fontweight='bold')
-        plt.title(title, fontsize=14, fontweight='bold', pad=20)
+        
+        # Enhanced title with total records
+        if total_records is not None:
+            enhanced_title = f"{title}\nTotal Records: {total_records:,}"
+        else:
+            enhanced_title = title
+            
+        plt.title(enhanced_title, fontsize=14, fontweight='bold', pad=25)
         plt.ylim(0, max(percentages) * 1.2 if percentages else 100)
+        
+        # Add total records as text annotation in the top-right corner
+        if total_records is not None:
+            plt.text(0.98, 0.95, f"Total: {total_records:,} records", 
+                    transform=plt.gca().transAxes, 
+                    ha='right', va='top',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7),
+                    fontsize=11, fontweight='bold')
         
         # Add grid for better readability
         plt.grid(axis='y', alpha=0.3)

@@ -61,10 +61,14 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
             else:
                 chart_title = f"Success/Fail Rate for {file_name}"
             
+            # Get total records count from database result
+            total_records = chart_result.get("row_count", 0)
+            
             chart_base64 = chart_generator.generate_bar_chart_base64(
                 chart_data=chart_result.get("chart_data", []),
                 title=chart_title,
-                show_only=show_only
+                show_only=show_only,
+                total_records=total_records
             )
             # Optionally persist a local copy for debugging
             try:
