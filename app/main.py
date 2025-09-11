@@ -317,26 +317,3 @@ async def health_check():
         "status": "healthy" 
     }
 
-# Debug endpoints for testing file reference resolution
-@app.get("/debug/memory/{session_id}")
-async def debug_memory(session_id: str):
-    """Debug endpoint to check session memory"""
-    return memory_service.get_session_context(session_id)
-
-@app.post("/debug/resolve")
-async def debug_resolve(request: dict):
-    """Debug endpoint to test prompt resolution"""
-    session_id = request.get("session_id")
-    prompt = request.get("prompt")
-    
-    # Store a test file reference first if provided
-    test_file = request.get("test_file")
-    if test_file:
-        memory_service.store_file_reference(session_id, test_file)
-    
-    resolved = memory_service.resolve_file_reference(session_id, prompt)
-    return {
-        "original": prompt,
-        "resolved": resolved,
-        "session_context": memory_service.get_session_context(session_id)
-    }
