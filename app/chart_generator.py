@@ -24,15 +24,15 @@ class ChartGenerator:
         if not chart_data:
             # This should not be reached as empty data is handled at plan executor level
             # But keeping for backward compatibility
-            return None
+            return ""
         
         # Calculate total records from chart data if not provided
         if total_records is None:
             total_records = sum(item.get("count", 0) for item in chart_data)
         
-        # If total records is 0, return None (empty chart)
+        # If total records is 0, return empty string (no chart)
         if total_records == 0:
-            return None
+            return ""
         
         # Filter chart data based on show_only parameter
         if show_only != "both":

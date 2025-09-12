@@ -105,14 +105,11 @@ class ConversationMemory:
     def resolve_file_reference(self, session_id: str, prompt: str) -> str:
         """Resolve file references like 'that file', 'the file', etc."""
         if session_id not in self.sessions:
-            print(f"DEBUG: Session {session_id} not found in memory")
             return prompt
         
         last_file = self.sessions[session_id]["context"].get("last_file_queried")
-        print(f"DEBUG: Session {session_id} last_file_queried: {last_file}")
         
         if not last_file:
-            print(f"DEBUG: No last file found for session {session_id}")
             return prompt
         
         import re
@@ -127,11 +124,16 @@ class ConversationMemory:
             (r'\bprevious file\b', f"'{last_file}'"),
             (r'\blast file\b', f"'{last_file}'"),
             
+            # Specific pattern for "for this file" - should come before general patterns
+            (r'\bfor this file\b', f"for '{last_file}'"),
+            (r'\bfor that file\b', f"for '{last_file}'"),
+            (r'\bfor the file\b', f"for '{last_file}'"),
+            
             # Contextual references
             (r'\bit\b(?=.*(?:rate|analysis|data|success|fail|record))', f"'{last_file}'"),  # 'it' in data context
             (r'\bthat\b(?=.*(?:csv|data|dataset|file))', f"'{last_file}'"),  # 'that' referring to data
             
-            # Pattern for "for that file" or similar
+            # Pattern for "for that" or similar (more general)
             (r'\bfor that\b(?!\s+file)', f"for '{last_file}'"),  # "show me success rate for that" 
             
             # More specific patterns
@@ -148,7 +150,6 @@ class ConversationMemory:
                 updated_prompt = re.sub(pattern, replacement, updated_prompt, flags=re.IGNORECASE)
                 if old_prompt != updated_prompt:
                     replacements_made.append((pattern, replacement))
-                    print(f"DEBUG: Resolved '{pattern}' -> '{replacement}' in session {session_id}")
         
         # If no direct pattern matches but the prompt seems to be asking about data
         # and doesn't contain a specific file name, try a more general approach
@@ -163,14 +164,11 @@ class ConversationMemory:
                 # Add the file reference to the end of the prompt
                 updated_prompt = f"{prompt} for '{last_file}'"
                 replacements_made.append(("implicit_context", f"for '{last_file}'"))
-                print(f"DEBUG: Added implicit file context to prompt in session {session_id}")
         
         if replacements_made:
-            print(f"DEBUG: Final resolved prompt: '{updated_prompt}'")
+            return updated_prompt
         else:
-            print(f"DEBUG: No file references found in prompt: '{prompt}'")
-        
-        return updated_prompt
+            return updated_prompt
 
 # Initialize memory service
 memory_service = ConversationMemory()

@@ -65,7 +65,7 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
             # If no data, don't generate a chart image
             if not chart_data or total_records == 0:
                 logger.info("No data available for chart generation - returning empty chart")
-                chart_base64 = None
+                chart_base64 = ""  # Use empty string instead of None
             else:
                 # Determine chart title based on filter
                 if show_only == "success":
@@ -97,7 +97,7 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
             logger.exception("Chart generation failed: %s", chart_error)
 
             # Simple error handling instead of complex fallback
-            chart_base64 = None
+            chart_base64 = ""  # Use empty string instead of None
             chart_result.update({
                 "error": "Chart generation failed",
                 "message": "Unable to generate chart. Returning data only."
@@ -111,7 +111,7 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
             "chart_data": chart_result.get("chart_data", []),
             "chart_image_base64": chart_base64,
             "row_count": chart_result.get("row_count", 0),
-            "chart_generation_failed": chart_base64 is None and chart_result.get("row_count", 0) > 0,
+            "chart_generation_failed": chart_base64 == "" and chart_result.get("row_count", 0) > 0,
             "message": chart_result.get("message", ""),
             "has_data": chart_result.get("row_count", 0) > 0
         }
