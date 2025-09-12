@@ -12,8 +12,6 @@ from pydantic import BaseModel
 from app.auth import validate_jwt_token, bearer_scheme
 from app.llm_service import llm_service
 from app.memory_service import memory_service
-from app.communication_coordinator import communication_coordinator, ComponentStatus
-from app.fallback_strategy import fallback_strategy, FallbackTrigger
 from app.plan_executor import execute_tool_with_coordination
 from app.agent import plan_and_execute
 
@@ -107,13 +105,12 @@ async def try_llm_tool_selection(cleaned_prompt: str, workflow_context: dict):
         tool_calls = llm_result.get("tool_calls", [])
         
         # Update component status - LLM working
-        communication_coordinator.update_component_status("llm_service", ComponentStatus.HEALTHY)
+        logger.info("LLM Service call successful")
         
         return tool_calls, llm_result, None
         
     except Exception as llm_error:
         logger.error("LLM Service failed: %s", llm_error)
-        communication_coordinator.handle_component_error("llm_service", llm_error, workflow_context)
         return [], None, llm_error
 
 
@@ -135,15 +132,10 @@ async def try_planner_fallback(cleaned_prompt: str, session_context: dict, workf
 
 async def handle_final_fallback(workflow_context: dict):
     """Handle final fallback when both LLM and planner fail."""
-    fallback_result = fallback_strategy.execute_fallback(FallbackTrigger.LLM_SERVICE_DOWN, workflow_context)
-    
-    if fallback_result.get("success"):
-        return fallback_result.get("tool_calls", []), fallback_result
-    
     return [], {
         "success": False,
         "error": "Both LLM and planner services unavailable",
-        "message": fallback_result.get("user_message", "Service temporarily unavailable"),
+        "message": "Our analytics service is currently experiencing issues. Please try again later.",
         "fallback_triggered": True
     }
 
@@ -246,17 +238,13 @@ async def receive_prompt(
 
         # Handle case where no tool calls were generated
         if not tool_calls:
-            fallback_result = fallback_strategy.execute_fallback(
-                FallbackTrigger.TOOL_SELECTION_FAILED, workflow_context
-            )
-            memory_service.store_interaction(session_id, cleaned_prompt, "none", fallback_result)
+            memory_service.store_interaction(session_id, cleaned_prompt, "none", {"error": "No tool calls generated"})
             return {
                 "success": False,
                 "error": "No tool call detected",
-                "message": fallback_result.get("user_message", "Unable to understand your request"),
+                "message": "I couldn't understand your request. Please try rephrasing your question about the data analysis.",
                 "session_id": session_id,
-                "suggestions": fallback_result.get("suggestions", []),
-                "llm_result": llm_result
+                "workflow_completed": True
             }
 
         # Parse and validate the first tool call
@@ -281,15 +269,18 @@ async def receive_prompt(
             logger.exception("Tool execution failed: %s", tool_error)
             
             error_context = {**workflow_context, "tool_name": tool_name, "tool_args": tool_args}
-            communication_coordinator.handle_component_error("database_service", tool_error, error_context)
 
-            # Try fallback based on error type
-            trigger = FallbackTrigger.DATABASE_ERROR if "database" in str(tool_error).lower() else FallbackTrigger.TOOL_SELECTION_FAILED
-            fallback_result = fallback_strategy.execute_fallback(trigger, error_context)
+            # Simple error response instead of complex fallback
+            error_result = {
+                "success": False,
+                "error": str(tool_error),
+                "message": "Database operation failed. Please try again later.",
+                "tool_name": tool_name
+            }
             
-            memory_service.store_interaction(session_id, cleaned_prompt, tool_name, fallback_result)
-            fallback_result["session_id"] = session_id
-            return fallback_result
+            memory_service.store_interaction(session_id, cleaned_prompt, tool_name, error_result)
+            error_result["session_id"] = session_id
+            return error_result
 
     except Exception as e:
         logger.exception("Unexpected error in receive_prompt: %s", e)
@@ -302,14 +293,12 @@ async def receive_prompt(
             "success": False,
             "error": str(e),
             "message": "An error occurred while processing your request. Please try again with a valid analytics question.",
-            "session_id": session_id
         }
 
 
 @app.get("/health")
 async def health_check():
-    system_health = communication_coordinator.get_system_health()
     return {
-        "status": "healthy" 
+        "status": "healthy"
     }
 

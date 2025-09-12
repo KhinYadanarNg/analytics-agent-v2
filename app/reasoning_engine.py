@@ -43,14 +43,16 @@ class ReasoningEngine:
         # Pre-compiled patterns for performance
         self.PAT_INTENTS = {
             QueryType.DATA_RETRIEVAL: [
-                re.compile(r'\b(show|get|find|list|retrieve)\b.*\b(records?|data|entries)\b', re.I),
-                re.compile(r'\b(success|fail|error)\b.*\b(records?|data)\b.*\b(for|in|from)\b', re.I),
-                re.compile(r'\bstatus\b.*\b(records?|data)\b', re.I),
+                re.compile(r'\b(show|get|find|list|retrieve)\b.*\b(records?|data|entries)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
+                re.compile(r'\b(success|fail|error)\b.*\b(records?|data)\b.*\b(for|in|from)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
+                re.compile(r'\bstatus\b.*\b(records?|data)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
+                re.compile(r'\b(show|get)\b.*\b(success|fail|failure|error)\b.*\b(for|in|from)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
             ],
             QueryType.SUCCESS_RATE_ANALYSIS: [
-                re.compile(r'\b(success|failure)\b.*\b(rate|percentage|ratio)\b', re.I),
+                re.compile(r'\b(success|failure|fail)\b.*\b(rate|percentage|ratio)\b', re.I),
                 re.compile(r'\b(calculate|compute|analy[sz]e)\b.*\b(success|performance)\b', re.I),
                 re.compile(r'\bhow\s+(many|much)\b.*\b(successful|failed)\b', re.I),
+                re.compile(r'\b(show|get)\b.*\b(success|fail|failure)\b.*\b(rate|percentage)\b', re.I),
             ],
             QueryType.CHART_GENERATION: [
                 re.compile(r'\b(chart|graph|visuali[sz]e|plot|diagram)\b', re.I),
@@ -72,10 +74,7 @@ class ReasoningEngine:
         
         # Tool registry for validation and planning
         self.TOOL_REGISTRY = {
-            "get_records_by_status": {"required": ["file_name", "status"], "expects": "tabular_data"},
             "get_success_rate_by_file_name": {"required": ["file_name"], "expects": "analytics"},
-            "render_chart": {"required": ["metric"], "expects": "chart"},
-            "list_available_files": {"required": [], "expects": "file_list"},
         }
     
     def analyze_query(self, user_prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -163,9 +162,19 @@ class ReasoningEngine:
                 ))
                 
         if qtype in (QueryType.SUCCESS_RATE_ANALYSIS, QueryType.CHART_GENERATION):
+            # Determine show_only parameter based on extracted status
+            show_only = "both"  # default
+            if e.get("status"):
+                status_list = e.get("status")
+                if status_list == ["success"]:
+                    show_only = "success"
+                elif status_list == ["fail"]:
+                    show_only = "fail"
+                # If both success and fail are mentioned, keep "both"
+            
             steps.append(Step(
                 "get_success_rate_by_file_name",
-                {"file_name": e.get("file_name")},
+                {"file_name": e.get("file_name"), "show_only": show_only},
                 "analytics",
                 postconditions=["rate_in_[0,1]"]
             ))
@@ -251,57 +260,8 @@ class ReasoningEngine:
 
     # ---------- Legacy Method Support (for backward compatibility) ----------
     
-    def _plan_data_retrieval(self, entities: Dict[str, Any]) -> Dict[str, Any]:
-        """Legacy method for backward compatibility."""
-        return {
-            "execution_strategy": "single_tool",
-            "primary_tool": "get_records_by_status",
-            "parameters": {
-                "file_name": entities.get("file_name"),
-                "status": entities.get("status")
-            },
-            "fallback_tools": [],
-            "expected_output": "tabular_data"
-        }
-    
-    def _plan_success_rate_analysis(self, entities: Dict[str, Any]) -> Dict[str, Any]:
-        """Legacy method for backward compatibility."""
-        return {
-            "execution_strategy": "single_tool",
-            "primary_tool": "get_success_rate_by_file_name",
-            "parameters": {
-                "file_name": entities.get("file_name")
-            },
-            "fallback_tools": [],
-            "expected_output": "analytics_with_chart"
-        }
-    
-    def _plan_chart_generation(self, entities: Dict[str, Any]) -> Dict[str, Any]:
-        """Legacy method for backward compatibility."""
-        return {
-            "execution_strategy": "single_tool",
-            "primary_tool": "get_success_rate_by_file_name",
-            "parameters": {
-                "file_name": entities.get("file_name")
-            },
-            "fallback_tools": [],
-            "expected_output": "chart_with_data"
-        }
-    
-    def _plan_fallback(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Legacy fallback method for backward compatibility."""
-        return {
-            "execution_strategy": "guided_interaction",
-            "primary_tool": None,
-            "parameters": {},
-            "fallback_tools": ["get_records_by_status", "get_success_rate_by_file_name"],
-            "expected_output": "clarification_needed",
-            "suggestions": [
-                "Please specify a file name (e.g., 'customer_sample_values.csv')",
-                "Ask for success rates, records by status, or charts",
-                "Example: 'Show me success rate for customer_sample_values.csv'"
-            ]
-        }
+    # Legacy methods removed - they were not being used in the current codebase
+    # The modern plan_execution() method handles all planning logic
 
 # Initialize reasoning engine
 reasoning_engine = ReasoningEngine()

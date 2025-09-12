@@ -1,11 +1,9 @@
 import base64
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from app.database_service import db_service
 from app.chart_generator import chart_generator
-from app.communication_coordinator import communication_coordinator, ComponentStatus
-from app.fallback_strategy import fallback_strategy, FallbackTrigger
-from app.memory_service import memory_service
+
 
 logger = logging.getLogger("plan_executor")
 
@@ -80,19 +78,17 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
                 logger.debug("Could not write debug chart to disk")
 
             # Update component status - chart generator working
-            communication_coordinator.update_component_status("chart_generator", ComponentStatus.HEALTHY)
+            logger.info("Chart generation successful")
 
         except Exception as chart_error:
             logger.exception("Chart generation failed: %s", chart_error)
-            communication_coordinator.handle_component_error("chart_generator", chart_error, context)
 
-            fallback_result = fallback_strategy.execute_fallback(
-                FallbackTrigger.CHART_GENERATION_FAILED,
-                {**context, "chart_data": chart_result.get("chart_data", [])}
-            )
-
+            # Simple error handling instead of complex fallback
             chart_base64 = None
-            chart_result.update(fallback_result)
+            chart_result.update({
+                "error": "Chart generation failed",
+                "message": "Unable to generate chart. Returning data only."
+            })
 
         return {
             "success": True,
@@ -153,26 +149,8 @@ async def execute_plan(plan, context: Dict[str, Any], max_iterations: int = 3) -
                 result = await execute_tool_with_coordination(tool, params, context)
             except Exception as e:
                 logger.exception("Step execution error for %s: %s", tool, e)
-                fb = fallback_strategy.execute_fallback(
-                    FallbackTrigger.DATABASE_ERROR if "database" in str(e).lower() else FallbackTrigger.UNKNOWN_QUERY,
-                    {**context, **{"failed_step": step.tool}}
-                )
-                if fb.get("success") and fb.get("tool_calls"):
-                    fc = fb["tool_calls"][0]
-                    if isinstance(fc, dict) and fc.get("function"):
-                        fname = fc["function"]["name"]
-                        fargs = fc["function"].get("arguments", {})
-                    else:
-                        fname = fc.get("name") or fc.get("tool_name")
-                        fargs = fc.get("arguments") or {}
-
-                    try:
-                        result = await execute_tool_with_coordination(fname, fargs, context)
-                    except Exception as e2:
-                        logger.exception("Fallback execution also failed for %s: %s", fname, e2)
-                        result = {"success": False, "error": str(e2)}
-                else:
-                    result = {"success": False, "error": str(e), "fallback": fb}
+                # Simple error handling instead of complex fallback
+                result = {"success": False, "error": str(e), "failed_step": step.tool}
 
             # Reflect: check postconditions if defined
             postconditions = getattr(step, "postconditions", None) or []

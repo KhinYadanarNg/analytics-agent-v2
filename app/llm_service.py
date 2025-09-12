@@ -194,30 +194,10 @@ Database Schema Context (read-only):
                 "llm_response": ""
             }
 
-        # If LLM unavailable → local behavior
+        # If LLM unavailable → fail to trigger reasoning engine fallback
         if not self.use_llm:
-            if looks_like_analytics(user_prompt):
-                # Smarter mock routing based on request content
-                prompt_lower = user_prompt.lower()
-                
-                # Check if asking for success rate for a specific file
-                if ("success rate" in prompt_lower or "fail rate" in prompt_lower) and "for file" in prompt_lower:
-                    # Extract file name from the prompt
-                    import re
-                    file_match = re.search(r"for file\s+['\"]?([^'\"]+)['\"]?", prompt_lower)
-                    if file_match:
-                        file_name = file_match.group(1).strip()
-                        show_only = "success" if "success rate" in prompt_lower and "fail rate" not in prompt_lower else "both"
-                        return {
-                            "success": True,
-                            "tool_calls": [{"name": "get_success_rate_by_file_name", "arguments": {"file_name": file_name, "show_only": show_only}}],
-                            "llm_response": f"mock: get success rate for {file_name}"
-                        }
-                
-            return {
-                "success": False,
-                "message": "This is a specialized analytics agent. Please ask questions about data analysis, success rates, charts, or file data."
-            }
+            # Raise an exception to trigger the fallback to reasoning engine in main.py
+            raise Exception("LLM service unavailable - OpenAI API key not configured or client failed to initialize")
 
         # LLM path
         start = time.time()
