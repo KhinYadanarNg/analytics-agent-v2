@@ -59,13 +59,29 @@ class DatabaseService:
             items = response.get('Items', [])
             total = len(items)
             if total == 0:
+                # Build descriptive message based on filters applied
+                message_parts = ["No records found for this file"]
+                if start_date and end_date:
+                    if start_date == end_date:
+                        message_parts.append(f"on {start_date}")
+                    else:
+                        message_parts.append(f"between {start_date} and {end_date}")
+                elif start_date:
+                    message_parts.append(f"from {start_date} onwards")
+                elif end_date:
+                    message_parts.append(f"until {end_date}")
+                
                 return {
                     "success": True,
                     "chart_data": [],
                     "row_count": 0,
-                    "message": "No records found for this file_id.",
+                    "message": " ".join(message_parts) + ".",
                     "file_id": file_id,
-                    "org_id": org_id
+                    "org_id": org_id,
+                    "date_filter": {
+                        "start_date": start_date,
+                        "end_date": end_date
+                    }
                 }
 
             success_count = 0

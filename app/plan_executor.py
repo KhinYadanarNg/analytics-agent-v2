@@ -58,34 +58,40 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
 
         # Generate chart image using matplotlib with error handling
         try:
-            # Determine chart title based on filter
-            if show_only == "success":
-                chart_title = f"Success Rate for {file_name}"
-            elif show_only == "fail":
-                chart_title = f"Fail Rate for {file_name}"
-            else:
-                chart_title = f"Success/Fail Rate for {file_name}"
-            
-            # Get total records count from database result
+            # Check if there's actual data to chart
+            chart_data = chart_result.get("chart_data", [])
             total_records = chart_result.get("row_count", 0)
             
-            chart_base64 = chart_generator.generate_bar_chart_base64(
-                chart_data=chart_result.get("chart_data", []),
-                title=chart_title,
-                show_only=show_only,
-                total_records=total_records,
-                file_name=file_name
-            )
-            # Optionally persist a local copy for debugging
-            try:
-                with open("test_chart.png", "wb") as f:
-                    f.write(base64.b64decode(chart_base64))
-                logger.debug("Chart saved as 'test_chart.png'")
-            except Exception:
-                logger.debug("Could not write debug chart to disk")
+            # If no data, don't generate a chart image
+            if not chart_data or total_records == 0:
+                logger.info("No data available for chart generation - returning empty chart")
+                chart_base64 = None
+            else:
+                # Determine chart title based on filter
+                if show_only == "success":
+                    chart_title = f"Success Rate for {file_name}"
+                elif show_only == "fail":
+                    chart_title = f"Fail Rate for {file_name}"
+                else:
+                    chart_title = f"Success/Fail Rate for {file_name}"
+                
+                chart_base64 = chart_generator.generate_bar_chart_base64(
+                    chart_data=chart_data,
+                    title=chart_title,
+                    show_only=show_only,
+                    total_records=total_records,
+                    file_name=file_name
+                )
+                # Optionally persist a local copy for debugging
+                try:
+                    with open("test_chart.png", "wb") as f:
+                        f.write(base64.b64decode(chart_base64))
+                    logger.debug("Chart saved as 'test_chart.png'")
+                except Exception:
+                    logger.debug("Could not write debug chart to disk")
 
-            # Update component status - chart generator working
-            logger.info("Chart generation successful")
+                # Update component status - chart generator working
+                logger.info("Chart generation successful")
 
         except Exception as chart_error:
             logger.exception("Chart generation failed: %s", chart_error)
@@ -105,7 +111,9 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
             "chart_data": chart_result.get("chart_data", []),
             "chart_image_base64": chart_base64,
             "row_count": chart_result.get("row_count", 0),
-            "chart_generation_failed": chart_base64 is None
+            "chart_generation_failed": chart_base64 is None and chart_result.get("row_count", 0) > 0,
+            "message": chart_result.get("message", ""),
+            "has_data": chart_result.get("row_count", 0) > 0
         }
 
     # List files

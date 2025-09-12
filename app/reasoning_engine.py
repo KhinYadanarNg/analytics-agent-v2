@@ -58,6 +58,9 @@ class ReasoningEngine:
                 re.compile(r'\b(success|fail|failure)\b.*\b(status|result)\b.*\b(for|of)\b', re.I),
                 re.compile(r'\b(how|what)\b.*\b(success|fail|failure)\b', re.I),
                 re.compile(r'\b(check|see|view)\b.*\b(success|fail|failure)\b', re.I),
+                # Analytics patterns
+                re.compile(r'\b(get|show|display)\b.*\b(analytics|analysis)\b', re.I),
+                re.compile(r'\b(analytics|analysis)\b.*\b(for|of)\b', re.I),
             ],
             QueryType.CHART_GENERATION: [
                 re.compile(r'\b(chart|graph|visuali[sz]e|plot|diagram)\b', re.I),
@@ -66,7 +69,7 @@ class ReasoningEngine:
         }
         
         # Entity extraction patterns
-        self.RE_FILE = re.compile(r'(?:"|"|")?([\w\-\s./]+?\.(?:csv|json|xlsx|parquet))(?:"|"|")?', re.I)
+        self.RE_FILE = re.compile(r'(?:file\s+)?(?:"|"|")?([a-zA-Z0-9_\-\.]+\.(?:csv|json|xlsx|parquet))(?:"|"|")?', re.I)
         self.RE_FILE_FALLBACKS = [
             re.compile(r'file\s+["\']?([\w\-\s./]+(?:\.\w+)?)["\']?', re.I),
             re.compile(r'for\s+["\']?([\w\-\s./]+(?:\.\w+)?)["\']?', re.I),
@@ -82,6 +85,9 @@ class ReasoningEngine:
         self.RE_DATE_FROM = re.compile(r'\bfrom\s+([\'"]?[\w\-/\s]+[\'"]?)(?:\s+(?:onwards?|onward))?', re.I)
         self.RE_DATE_TO = re.compile(r'\b(?:to|until|before)\s+([\'"]?[\w\-/\s]+[\'"]?)', re.I)
         self.RE_DATE_SINGLE = re.compile(r'\b(?:on|date)\s+([\'"]?[\w\-/\s]+[\'"]?)', re.I)
+        
+        # Relative date patterns
+        self.RE_RELATIVE_DATE = re.compile(r'\b(today|yesterday|tomorrow|this\s+week|last\s+week|this\s+month|last\s+month)\b', re.I)
         
         # Tool registry for validation and planning
         self.TOOL_REGISTRY = {
@@ -315,7 +321,7 @@ class ReasoningEngine:
             end_date = to_match.group(1).strip('\'"')
             result["end_date"] = self._normalize_date(end_date)
         
-        # Try to extract single date
+        # Try to extract single date (explicit "on date" format)
         if not result["start_date"] and not result["end_date"]:
             single_match = self.RE_DATE_SINGLE.search(prompt)
             if single_match:
@@ -324,18 +330,33 @@ class ReasoningEngine:
                 result["start_date"] = normalized_date
                 result["end_date"] = normalized_date
         
+        # Try to extract standalone relative dates (yesterday, today, etc.)
+        if not result["start_date"] and not result["end_date"]:
+            relative_match = self.RE_RELATIVE_DATE.search(prompt)
+            if relative_match:
+                relative_date = relative_match.group(1).strip()
+                normalized_date = self._normalize_date(relative_date)
+                if normalized_date:
+                    result["start_date"] = normalized_date
+                    result["end_date"] = normalized_date
+        
         return result
 
     def _normalize_date(self, date_str: str) -> Optional[str]:
         """Normalize date string to YYYY-MM-DD format."""
         import re
-        from datetime import datetime
+        from datetime import datetime, timedelta
         
         if not date_str:
             return None
             
         # Clean the date string
         date_str = date_str.strip().replace("'", "").replace('"', '')
+        
+        # Handle relative dates first
+        relative_date = self._parse_relative_date(date_str)
+        if relative_date:
+            return relative_date
         
         # Common date patterns
         patterns = [
@@ -357,6 +378,43 @@ class ReasoningEngine:
                     continue
         
         return None  # Return None if no pattern matches
+
+    def _parse_relative_date(self, date_str: str) -> Optional[str]:
+        """Parse relative date expressions like 'today', 'yesterday', etc."""
+        from datetime import datetime, timedelta
+        import calendar
+        
+        date_str_lower = date_str.lower().strip()
+        today = datetime.now()
+        
+        if date_str_lower == 'today':
+            return today.strftime('%Y-%m-%d')
+        elif date_str_lower == 'yesterday':
+            return (today - timedelta(days=1)).strftime('%Y-%m-%d')
+        elif date_str_lower == 'tomorrow':
+            return (today + timedelta(days=1)).strftime('%Y-%m-%d')
+        elif date_str_lower in ['this week', 'thisweek']:
+            # Start of current week (Monday)
+            days_since_monday = today.weekday()
+            start_of_week = today - timedelta(days=days_since_monday)
+            return start_of_week.strftime('%Y-%m-%d')
+        elif date_str_lower in ['last week', 'lastweek']:
+            # Start of last week (Monday)
+            days_since_monday = today.weekday()
+            start_of_last_week = today - timedelta(days=days_since_monday + 7)
+            return start_of_last_week.strftime('%Y-%m-%d')
+        elif date_str_lower in ['this month', 'thismonth']:
+            # Start of current month
+            return today.replace(day=1).strftime('%Y-%m-%d')
+        elif date_str_lower in ['last month', 'lastmonth']:
+            # Start of last month
+            if today.month == 1:
+                last_month = today.replace(year=today.year - 1, month=12, day=1)
+            else:
+                last_month = today.replace(month=today.month - 1, day=1)
+            return last_month.strftime('%Y-%m-%d')
+        
+        return None
 
     def _assess_complexity(self, plower: str, scores: Dict[QueryType, int], has_seq: bool) -> str:
         """Enhanced complexity assessment with multiple indicators."""

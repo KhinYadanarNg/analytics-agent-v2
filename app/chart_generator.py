@@ -22,11 +22,17 @@ class ChartGenerator:
             Base64 encoded PNG image string
         """
         if not chart_data:
-            return ChartGenerator._generate_empty_chart_base64("No data available")
+            # This should not be reached as empty data is handled at plan executor level
+            # But keeping for backward compatibility
+            return None
         
         # Calculate total records from chart data if not provided
         if total_records is None:
             total_records = sum(item.get("count", 0) for item in chart_data)
+        
+        # If total records is 0, return None (empty chart)
+        if total_records == 0:
+            return None
         
         # Filter chart data based on show_only parameter
         if show_only != "both":
