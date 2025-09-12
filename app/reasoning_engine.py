@@ -44,15 +44,20 @@ class ReasoningEngine:
         self.PAT_INTENTS = {
             QueryType.DATA_RETRIEVAL: [
                 re.compile(r'\b(show|get|find|list|retrieve)\b.*\b(records?|data|entries)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
-                re.compile(r'\b(success|fail|error)\b.*\b(records?|data)\b.*\b(for|in|from)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
-                re.compile(r'\bstatus\b.*\b(records?|data)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
-                re.compile(r'\b(show|get)\b.*\b(success|fail|failure|error)\b.*\b(for|in|from)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
+                re.compile(r'\b(records?|data|entries)\b.*\b(for|in|from)\b(?!.*\b(success|fail|failure)\b)', re.I),
+                re.compile(r'\bstatus\b.*\b(records?|data|table)\b(?!.*\b(rate|percentage|ratio)\b)', re.I),
+                re.compile(r'\b(list|show)\b.*\b(all|every)\b.*\b(records?|entries)\b', re.I),
             ],
             QueryType.SUCCESS_RATE_ANALYSIS: [
                 re.compile(r'\b(success|failure|fail)\b.*\b(rate|percentage|ratio)\b', re.I),
                 re.compile(r'\b(calculate|compute|analy[sz]e)\b.*\b(success|performance)\b', re.I),
                 re.compile(r'\bhow\s+(many|much)\b.*\b(successful|failed)\b', re.I),
                 re.compile(r'\b(show|get)\b.*\b(success|fail|failure)\b.*\b(rate|percentage)\b', re.I),
+                # Enhanced patterns for implicit rate queries
+                re.compile(r'\b(show|get|display)\b.*\b(success|fail|failure)\b.*\b(for|in|from)\b.*\bfile\b', re.I),
+                re.compile(r'\b(success|fail|failure)\b.*\b(status|result)\b.*\b(for|of)\b', re.I),
+                re.compile(r'\b(how|what)\b.*\b(success|fail|failure)\b', re.I),
+                re.compile(r'\b(check|see|view)\b.*\b(success|fail|failure)\b', re.I),
             ],
             QueryType.CHART_GENERATION: [
                 re.compile(r'\b(chart|graph|visuali[sz]e|plot|diagram)\b', re.I),
@@ -153,7 +158,28 @@ class ReasoningEngine:
 
         # Plan execution steps based on query type
         if qtype in (QueryType.DATA_RETRIEVAL, QueryType.UNKNOWN):
-            if e.get("status"):
+            # Check if this is actually a success/fail query that should get rate data
+            original_query = analysis.get("original_prompt", "")
+            has_success_fail_keywords = bool(e.get("status")) or bool(self.RE_SUCCESS.search(original_query)) or bool(self.RE_FAIL.search(original_query))
+            
+            if has_success_fail_keywords and e.get("file_name"):
+                # Treat as implicit success rate query
+                show_only = "both"  # default
+                if e.get("status"):
+                    status_list = e.get("status")
+                    if status_list == ["success"]:
+                        show_only = "success"
+                    elif status_list == ["fail"]:
+                        show_only = "fail"
+                
+                steps.append(Step(
+                    "get_success_rate_by_file_name",
+                    {"file_name": e.get("file_name"), "show_only": show_only},
+                    "analytics",
+                    postconditions=["rate_in_[0,1]"]
+                ))
+            elif e.get("status"):
+                # Explicit record retrieval
                 steps.append(Step(
                     "get_records_by_status",
                     {"file_name": e.get("file_name"), "status": e.get("status")},
