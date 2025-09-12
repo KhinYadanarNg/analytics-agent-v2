@@ -77,6 +77,12 @@ class ReasoningEngine:
         self.RE_GROUPBY = re.compile(r'\bby\s+([a-z_][\w\s-]+)\b', re.I)
         self.RE_CHART_TYPE = re.compile(r'\b(bar|line|pie|scatter)\b', re.I)
         
+        # Date range patterns (more flexible)
+        self.RE_DATE_RANGE = re.compile(r'\b(between|from)\s+([\'"]?[\w\-/\s]+[\'"]?)\s+(to|and)\s+([\'"]?[\w\-/\s]+[\'"]?)', re.I)
+        self.RE_DATE_FROM = re.compile(r'\bfrom\s+([\'"]?[\w\-/\s]+[\'"]?)(?:\s+(?:onwards?|onward))?', re.I)
+        self.RE_DATE_TO = re.compile(r'\b(?:to|until|before)\s+([\'"]?[\w\-/\s]+[\'"]?)', re.I)
+        self.RE_DATE_SINGLE = re.compile(r'\b(?:on|date)\s+([\'"]?[\w\-/\s]+[\'"]?)', re.I)
+        
         # Tool registry for validation and planning
         self.TOOL_REGISTRY = {
             "get_success_rate_by_file_name": {"required": ["file_name"], "expects": "analytics"},
@@ -110,6 +116,7 @@ class ReasoningEngine:
         status = self._extract_status(plower)  # returns List[str] or None
         group_by = self._extract_group_by(plower)
         chart_type = self._extract_chart_type(plower)
+        date_range = self._extract_date_range(prompt)  # Extract date range
 
         # Complexity assessment
         complexity = self._assess_complexity(plower, scores, bool(self.RE_SEQUENCE.search(plower)))
@@ -133,6 +140,7 @@ class ReasoningEngine:
                 "status": status,
                 "group_by": group_by,
                 "chart_type": chart_type,
+                "date_range": date_range,
             },
             "complexity": complexity,
             "confidence": confidence,
@@ -172,9 +180,17 @@ class ReasoningEngine:
                     elif status_list == ["fail"]:
                         show_only = "fail"
                 
+                # Prepare parameters with date range if available
+                params = {"file_name": e.get("file_name"), "show_only": show_only}
+                date_range = e.get("date_range", {})
+                if date_range.get("start_date"):
+                    params["start_date"] = date_range["start_date"]
+                if date_range.get("end_date"):
+                    params["end_date"] = date_range["end_date"]
+                
                 steps.append(Step(
                     "get_success_rate_by_file_name",
-                    {"file_name": e.get("file_name"), "show_only": show_only},
+                    params,
                     "analytics",
                     postconditions=["rate_in_[0,1]"]
                 ))
@@ -198,9 +214,17 @@ class ReasoningEngine:
                     show_only = "fail"
                 # If both success and fail are mentioned, keep "both"
             
+            # Prepare parameters with date range if available
+            params = {"file_name": e.get("file_name"), "show_only": show_only}
+            date_range = e.get("date_range", {})
+            if date_range.get("start_date"):
+                params["start_date"] = date_range["start_date"]
+            if date_range.get("end_date"):
+                params["end_date"] = date_range["end_date"]
+            
             steps.append(Step(
                 "get_success_rate_by_file_name",
-                {"file_name": e.get("file_name"), "show_only": show_only},
+                params,
                 "analytics",
                 postconditions=["rate_in_[0,1]"]
             ))
@@ -265,6 +289,74 @@ class ReasoningEngine:
         """Extract preferred chart type."""
         m = self.RE_CHART_TYPE.search(plower)
         return m.group(1).lower() if m else None
+
+    def _extract_date_range(self, prompt: str) -> Dict[str, Optional[str]]:
+        """Extract date range from user prompt."""
+        result = {"start_date": None, "end_date": None}
+        
+        # Try to extract date range (between X and Y)
+        range_match = self.RE_DATE_RANGE.search(prompt)
+        if range_match:
+            start_date = range_match.group(2).strip('\'"')
+            end_date = range_match.group(4).strip('\'"')
+            result["start_date"] = self._normalize_date(start_date)
+            result["end_date"] = self._normalize_date(end_date)
+            return result
+        
+        # Try to extract "from" date
+        from_match = self.RE_DATE_FROM.search(prompt)
+        if from_match:
+            start_date = from_match.group(1).strip('\'"')
+            result["start_date"] = self._normalize_date(start_date)
+        
+        # Try to extract "to/until" date
+        to_match = self.RE_DATE_TO.search(prompt)
+        if to_match:
+            end_date = to_match.group(1).strip('\'"')
+            result["end_date"] = self._normalize_date(end_date)
+        
+        # Try to extract single date
+        if not result["start_date"] and not result["end_date"]:
+            single_match = self.RE_DATE_SINGLE.search(prompt)
+            if single_match:
+                single_date = single_match.group(1).strip('\'"')
+                normalized_date = self._normalize_date(single_date)
+                result["start_date"] = normalized_date
+                result["end_date"] = normalized_date
+        
+        return result
+
+    def _normalize_date(self, date_str: str) -> Optional[str]:
+        """Normalize date string to YYYY-MM-DD format."""
+        import re
+        from datetime import datetime
+        
+        if not date_str:
+            return None
+            
+        # Clean the date string
+        date_str = date_str.strip().replace("'", "").replace('"', '')
+        
+        # Common date patterns
+        patterns = [
+            (r'(\d{4})-(\d{1,2})-(\d{1,2})', '%Y-%m-%d'),  # 2024-01-15
+            (r'(\d{1,2})-(\d{1,2})-(\d{4})', '%d-%m-%Y'),  # 15-01-2024
+            (r'(\d{1,2})/(\d{1,2})/(\d{4})', '%m/%d/%Y'),  # 01/15/2024
+            (r'(\d{4})/(\d{1,2})/(\d{1,2})', '%Y/%m/%d'),  # 2024/01/15
+            (r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})', '%d %b %Y'),  # 15 Jan 2024
+            (r'(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})', '%d %B %Y'),  # 15 January 2024
+        ]
+        
+        for pattern, format_str in patterns:
+            match = re.match(pattern, date_str, re.I)
+            if match:
+                try:
+                    parsed_date = datetime.strptime(date_str, format_str)
+                    return parsed_date.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+        
+        return None  # Return None if no pattern matches
 
     def _assess_complexity(self, plower: str, scores: Dict[QueryType, int], has_seq: bool) -> str:
         """Enhanced complexity assessment with multiple indicators."""

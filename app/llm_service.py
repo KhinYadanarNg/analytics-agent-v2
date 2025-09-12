@@ -125,6 +125,15 @@ Parameter rules:
 - If user asks "fail rate" → show_only="fail"
 - If user asks "rates" (plural) or "both" → show_only="both"
 
+Date filtering rules:
+- If user mentions date ranges like "between X to Y", "from X to Y", "until X", "on X" → extract and use start_date/end_date parameters
+- Convert dates to YYYY-MM-DD format (e.g., "Jan 15 2024" → "2024-01-15")
+- Examples:
+  * "between 2024-01-01 to 2024-12-31" → start_date="2024-01-01", end_date="2024-12-31"
+  * "from January 15 2024" → start_date="2024-01-15"
+  * "until 2024-06-30" → end_date="2024-06-30"
+  * "on 2024-05-15" → start_date="2024-05-15", end_date="2024-05-15"
+
 Tool selection logic:
 - If user asks for success/fail rates for a specific file → use get_success_rate_by_file_name
 

@@ -37,6 +37,8 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
     if tool_name == "get_success_rate_by_file_name":
         file_name = tool_args.get("file_name")
         show_only = tool_args.get("show_only", "both")  # Default to showing both
+        start_date = tool_args.get("start_date")
+        end_date = tool_args.get("end_date")
         
         file_id = await db_service.get_file_id_by_name(file_name)
         if not file_id:
@@ -47,7 +49,12 @@ async def execute_tool_with_coordination(tool_name: str, tool_args: dict, contex
                 "file_name": file_name
             }
         org_id = context.get("org_id")
-        chart_result = await db_service.get_success_rate_by_file_id(file_id=file_id, org_id=org_id)
+        chart_result = await db_service.get_success_rate_by_file_id(
+            file_id=file_id, 
+            org_id=org_id, 
+            start_date=start_date, 
+            end_date=end_date
+        )
 
         # Generate chart image using matplotlib with error handling
         try:

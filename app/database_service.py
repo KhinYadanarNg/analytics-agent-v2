@@ -11,12 +11,13 @@ aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 class DatabaseService:
     logger = logging.getLogger("database_service")
 
-    async def get_success_rate_by_file_id(self, file_id: Optional[str] = None, file_name: Optional[str] = None, org_id: Optional[str] = None) -> Dict[str, Any]:
+    async def get_success_rate_by_file_id(self, file_id: Optional[str] = None, file_name: Optional[str] = None, org_id: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
         """
         Calculate the percentage of success and fail records for a given file_id or file_name in the tracker table.
 
         If `file_id` is not provided, `file_name` will be used to look up the file id via `get_file_id_by_name`.
         If `org_id` is provided, results will be filtered to that organization.
+        If start_date or end_date are provided, results will be filtered by created_date range.
 
         Returns a dict with chart data for visualization and includes the resolved `file_id` and `org_id` for debugging.
         """
@@ -39,8 +40,17 @@ class DatabaseService:
             if org_id:
                 filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('organization_id').eq(org_id)
                 self.logger.debug("Filtering by org_id: %s", org_id)
+            
+            # Add date range filtering
+            if start_date:
+                filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('created_date').gte(start_date)
+                self.logger.debug("Filtering from start_date: %s", start_date)
+            if end_date:
+                filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('created_date').lte(end_date)
+                self.logger.debug("Filtering to end_date: %s", end_date)
 
-            self.logger.info("Querying tracker_table for file_id=%s org_id=%s", file_id, org_id)
+            self.logger.info("Querying tracker_table for file_id=%s org_id=%s start_date=%s end_date=%s", 
+                           file_id, org_id, start_date, end_date)
 
             response = self.tracker_table.scan(
                 FilterExpression=filter_expr
