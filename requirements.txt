@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+python-jose[cryptography]
+python-dotenv
+langchain-openai
+langchain-community
+langgraph
