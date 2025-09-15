@@ -12,3 +12,4 @@ seaborn
 httpx
 tiktoken
 langsmith
+python-dateutil

@@ -1,11 +1,12 @@
 """
-Enhanced analytics query processing service with report type detection.
+Simplified analytics query processing service where LLM handles date extraction.
 """
 import json
 import logging
 import asyncio
 import re
 from typing import Tuple, Optional, Dict, Any, List
+from datetime import datetime, date
 from app.config import OPENAI_MODEL, USE_LLM, DEBUG
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
@@ -115,6 +116,7 @@ class AnalyticsService:
         """
         Build the agent graph, invoke it, generate chart, 
         then have LLM interpret the results for a natural response.
+        The LLM will handle date extraction from the prompt.
 
         Args:
             prompt: The user's query
@@ -128,7 +130,7 @@ class AnalyticsService:
             chart_type = chart_generator.detect_chart_type_from_prompt(prompt)
             report_type = AnalyticsService.detect_report_type(prompt)
             
-            # Log detected chart type for debugging
+            # Log detected parameters for debugging
             logger = logging.getLogger("analytics_agent")
             logger.info(f"Detected chart type: '{chart_type}' for prompt: '{prompt[:100]}...'")
             logger.info(f"Detected report type: '{report_type}'")
@@ -138,19 +140,21 @@ class AnalyticsService:
         except Exception as e:
             return {"success": False, "message": str(e), "chart_image": None}
 
-        # prepare initial graph state with chart type and report type context
-        messages = [SystemMessage(content=SYSTEM)]
+        # Get current date for context
+        current_date = date.today().strftime('%Y-%m-%d')
+        
+        # Prepare system message with current date context
+        system_message = SYSTEM.format(current_date=current_date)
+        messages = [SystemMessage(content=system_message)]
         
         # Add conversation history if available (previous context)
         if conversation_history:
             for interaction in conversation_history[-3:]:  # Use last 3 interactions for context
-                if interaction.get("user_message"):
-                    messages.append(HumanMessage(content=interaction["user_message"]))
-                if interaction.get("assistant_response"):
+                if interaction.get("user_prompt"):
+                    messages.append(HumanMessage(content=interaction["user_prompt"]))
+                if interaction.get("response_summary", {}).get("message"):
                     # Extract the main response text
-                    response_text = interaction["assistant_response"]
-                    if isinstance(response_text, dict):
-                        response_text = response_text.get("message", str(response_text))
+                    response_text = interaction["response_summary"]["message"]
                     messages.append(AIMessage(content=response_text))
         
         # Add the current prompt
@@ -160,7 +164,7 @@ class AnalyticsService:
             "messages": messages,
             "chart_type": chart_type,
             "report_type": report_type,
-            "session_id": session_id  # Store session_id in state for tools if needed
+            "session_id": session_id
         }
 
         loop = asyncio.get_running_loop()
@@ -175,6 +179,7 @@ class AnalyticsService:
         chart_data = []
         file_name = None
         row_count = 0
+        date_filter_used = None
         
         for m in compiled_result.get("messages", []):
             if isinstance(m, ToolMessage):
@@ -183,14 +188,26 @@ class AnalyticsService:
                     tool_results.append(tool_data)
                     
                     # Extract chart data from tool results
-                    if tool_data.get("success") and tool_data.get("chart_data"):
+                    if tool_data.get("success") and "chart_data" in tool_data:
                         chart_data = tool_data.get("chart_data", [])
                         file_name = tool_data.get("file_name")
                         row_count = tool_data.get("row_count", 0)
-                        # Keep the user's requested chart_type - don't override with tool result
-                        # The chart_type was already detected from user prompt and should be preserved
+                        # Check if date filters were used
+                        if tool_data.get("date_filter"):
+                            date_filter_used = tool_data.get("date_filter")
                 except:
                     tool_results.append(m.content)
+            
+            # Also check AIMessage for tool calls to see what dates were used
+            if isinstance(m, AIMessage) and hasattr(m, 'tool_calls'):
+                for tool_call in m.tool_calls:
+                    if tool_call.get('args'):
+                        args = tool_call['args']
+                        if args.get('start_date') or args.get('end_date'):
+                            date_filter_used = {
+                                'start_date': args.get('start_date'),
+                                'end_date': args.get('end_date')
+                            }
 
         # Filter chart data based on report type
         original_chart_data = chart_data.copy()
@@ -205,7 +222,7 @@ class AnalyticsService:
                     chart_data=filtered_chart_data,
                     chart_type=chart_type,
                     file_name=file_name,
-                    report_type=report_type  # Pass report type to chart generator
+                    report_type=report_type
                 )
                 chart_generated = True
             except Exception as e:
@@ -222,6 +239,7 @@ class AnalyticsService:
             file_name=file_name,
             row_count=row_count,
             report_type=report_type,
+            date_filter_used=date_filter_used,
             conversation_history=conversation_history
         )
         
@@ -243,13 +261,14 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
                                 original_chart_data: List[Dict],
                                 chart_type: str, chart_generated: bool,
                                 file_name: str, row_count: int, 
-                                report_type: str, conversation_history: List[Dict[str, Any]] = None) -> str:
+                                report_type: str, date_filter_used: Dict[str, str],
+                                conversation_history: List[Dict[str, Any]] = None) -> str:
     """
     Have the LLM interpret the results and provide a natural language response.
     """
     if not USE_LLM:
         # Fallback to basic message if LLM not available
-        return format_basic_message(chart_data, file_name, row_count, chart_type, report_type)
+        return format_basic_message(chart_data, file_name, row_count, chart_type, report_type, date_filter_used)
     
     try:
         llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0.3)
@@ -257,23 +276,22 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
         # Prepare context for interpretation based on report type
         context_parts = []
         
-        # Add conversation context if available
-        if conversation_history:
-            recent_files = []
-            for interaction in conversation_history[-2:]:  # Last 2 interactions
-                if interaction.get("user_message"):
-                    # Extract file references from previous conversations
-                    import re
-                    file_matches = re.findall(r'(\w+\.csv)', interaction["user_message"])
-                    recent_files.extend(file_matches)
-            
-            if recent_files:
-                context_parts.append(f"Previously discussed files: {', '.join(set(recent_files))}")
-        
         if chart_data:
             context_parts.append(f"File analyzed: {file_name}")
             context_parts.append(f"Total records: {row_count}")
             context_parts.append(f"Report type requested: {report_type}")
+            
+            # Add date context if filters were applied
+            if date_filter_used:
+                if date_filter_used.get("start_date") and date_filter_used.get("end_date"):
+                    if date_filter_used["start_date"] == date_filter_used["end_date"]:
+                        context_parts.append(f"Date filter: {date_filter_used['start_date']}")
+                    else:
+                        context_parts.append(f"Date range: {date_filter_used['start_date']} to {date_filter_used['end_date']}")
+                elif date_filter_used.get("start_date"):
+                    context_parts.append(f"From date: {date_filter_used['start_date']}")
+                elif date_filter_used.get("end_date"):
+                    context_parts.append(f"Until date: {date_filter_used['end_date']}")
             
             # Extract metrics based on report type
             if report_type == "success":
@@ -306,36 +324,26 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
                 context_parts.append(f"Generated {report_desc[report_type]} {chart_type} chart")
         else:
             context_parts.append(f"No {report_type} data found for file: {file_name}")
-        
-        # Create interpretation prompt with conversation context
-        conversation_context = ""
-        if conversation_history:
-            conversation_context = "\nConversation Context:\n"
-            for i, interaction in enumerate(conversation_history[-2:], 1):  # Last 2 interactions
-                if interaction.get("user_message"):
-                    conversation_context += f"Previous Request {i}: {interaction['user_message']}\n"
-                if interaction.get("assistant_response"):
-                    response = interaction["assistant_response"]
-                    if isinstance(response, dict):
-                        response = response.get("message", "Response provided")
-                    conversation_context += f"Previous Response {i}: {response[:100]}...\n"
+            if date_filter_used:
+                context_parts.append("Note: Date filters were applied which may have limited the results")
         
         interpretation_prompt = f"""
 Based on the user's current request: "{prompt}"
-{conversation_context}
+
 Current Results obtained:
 {chr(10).join(context_parts)}
 
 The user specifically requested a {report_type} report, so focus your response accordingly.
+{"Date filters were applied to the query." if date_filter_used else ""}
 
 Please provide a natural, conversational response that:
 1. Directly answers what the user asked for
-2. Focuses on the {report_type} metrics they requested
-3. Highlights key insights from the filtered data
-4. If there are concerning patterns (based on the report type), mention them
-5. Mentions that a {report_type}-focused {chart_type} chart has been generated (if chart was generated)
-6. Be concise but informative
-7. Reference previous context if the current request relates to it (e.g., "that file" referring to previously mentioned files)
+2. Mentions the date range if date filters were applied
+3. Focuses on the {report_type} metrics they requested
+4. Highlights key insights from the filtered data
+5. If there are concerning patterns (based on the report type), mention them
+6. Mentions that a {report_type}-focused {chart_type} chart has been generated (if chart was generated)
+7. Be concise but informative
 
 Do not use bullet points or numbered lists. Provide a flowing, natural response.
 """
@@ -357,13 +365,16 @@ Do not use bullet points or numbered lists. Provide a flowing, natural response.
         logger = logging.getLogger("analytics_agent")
         logger.exception(f"Failed to get LLM interpretation: {e}")
         # Fallback to basic message
-        return format_basic_message(chart_data, file_name, row_count, chart_type, report_type)
+        return format_basic_message(chart_data, file_name, row_count, chart_type, report_type, date_filter_used)
 
 def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int, 
-                        chart_type: str, report_type: str) -> str:
+                        chart_type: str, report_type: str, date_filter_used: Dict[str, str]) -> str:
     """Fallback message formatter when LLM interpretation fails."""
     if not chart_data:
-        return f"No {report_type} data found for file: {file_name}" if file_name else f"No {report_type} data available"
+        msg = f"No {report_type} data found for file: {file_name}" if file_name else f"No {report_type} data available"
+        if date_filter_used:
+            msg += " for the specified date range"
+        return msg
     
     success_data = next((item for item in chart_data if item.get('status', '').lower() == 'success'), None)
     fail_data = next((item for item in chart_data if item.get('status', '').lower() == 'fail'), None)
@@ -372,6 +383,14 @@ def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int,
     
     if file_name:
         message_parts.append(f"Analysis complete for {file_name}.")
+    
+    # Add date context
+    if date_filter_used:
+        if date_filter_used.get("start_date") and date_filter_used.get("end_date"):
+            if date_filter_used["start_date"] == date_filter_used["end_date"]:
+                message_parts.append(f"Date: {date_filter_used['start_date']}.")
+            else:
+                message_parts.append(f"Date range: {date_filter_used['start_date']} to {date_filter_used['end_date']}.")
     
     if row_count > 0:
         message_parts.append(f"Analyzed {row_count} records.")
@@ -408,19 +427,54 @@ def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int,
 
 # --- System prompt -----------------------------------------------------------------
 
-SYSTEM = (
-    "You are the Analytics Agent for data quality and data accuracy.\n"
-    "- You specialize in retrieving analytics from DynamoDB via provided tools.\n"
-    "- You analyze success and failure rates for data processing tasks.\n"
-    "- Pay attention to the user's specific request: they may want only success data, only failure data, or both.\n"
-    "- When you receive tool results, interpret them thoughtfully based on what the user asked for.\n"
-    "- Highlight concerning patterns like high failure rates when relevant.\n"
-    "- Be direct and insightful in your analysis.\n"
-    "- NEVER fabricate data - only report what the tools return.\n"
-    "- Focus your response on the type of report the user requested (success-only, failure-only, or both).\n"
-    "- Use conversation history to understand file references like 'that file', 'this file', or 'the same file'.\n"
-    "- When a user refers to 'that file' or similar, look at the conversation history to identify which file they mean.\n"
-)
+SYSTEM = """You are the Analytics Agent for data quality and data accuracy.
+Today's date is: {current_date}
+
+Your capabilities:
+- You specialize in retrieving analytics from DynamoDB via the get_success_rate_by_file_name tool
+- You analyze success and failure rates for data processing tasks
+- The data is filtered by the 'created_date' column in the database
+
+CRITICAL INSTRUCTIONS FOR DATE HANDLING:
+When users mention dates or time periods in their queries, you MUST extract and convert them to YYYY-MM-DD format and pass them as start_date and end_date parameters to the tool.
+
+IMPORTANT DATE RULES:
+- If user says "from DATE" without an end date → use start_date=DATE, end_date="{current_date}" (from that date to today)
+- If user says "since DATE" → use start_date=DATE, end_date="{current_date}" (from that date to today)
+- If user mentions only one specific date → use start_date=DATE, end_date="{current_date}" (from that date to today)
+- If user says "on DATE" → use start_date=DATE, end_date=DATE (only that specific date)
+- Always include BOTH start_date and end_date when ANY date is mentioned
+
+Examples of CORRECT date extraction:
+- "today" → start_date="{current_date}", end_date="{current_date}"
+- "yesterday" → calculate yesterday's date and use it for both start_date and end_date
+- "from 2025-09-05" → start_date="2025-09-05", end_date="{current_date}"
+- "since September 5, 2025" → start_date="2025-09-05", end_date="{current_date}"
+- "on December 15, 2024" → start_date="2024-12-15", end_date="2024-12-15"
+- "from Dec 1 to Dec 15" → start_date="2024-12-01", end_date="2024-12-15"
+- "last 7 days" → calculate from 7 days ago to today
+- "this month" → from first day of current month to today
+- "last month" → full previous month range
+
+When calling the get_success_rate_by_file_name tool:
+1. Always extract the file name from the user's query (remove extra quotes or spaces)
+2. If the user mentions ANY date or time period, ALWAYS include both start_date and end_date
+3. These dates filter the data by the created_date column in the database
+4. If no dates are mentioned, don't include date parameters (returns all data)
+
+Example tool calls:
+- User: "Show me fail rate for file customer.csv from 2025-09-05"
+  Call: get_success_rate_by_file_name(file_name="customer.csv", start_date="2025-09-05", end_date="{current_date}")
+  
+- User: "Success rate for data.csv on 2025-09-05"  
+  Call: get_success_rate_by_file_name(file_name="data.csv", start_date="2025-09-05", end_date="2025-09-05")
+
+Other instructions:
+- Pay attention to whether the user wants success data, failure data, or both
+- Be direct and insightful in your analysis
+- NEVER fabricate data - only report what the tools return
+- Focus your response on what the user specifically requested
+"""
 
 # maximum number of assistant->tool cycles before we force-stop the agent
 MAX_AGENT_LOOPS = 10
@@ -428,6 +482,7 @@ MAX_AGENT_LOOPS = 10
 def build_app():
     if not USE_LLM:
         raise SystemExit("OPENAI_API_KEY missing. Add it to .env to run the chat agent.")
+    
     llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0).bind_tools(AnalyticsService.TOOLS)
 
     graph = StateGraph(MessagesState)
@@ -461,7 +516,7 @@ def build_app():
             # We'll use LLM interpretation instead
             return {"messages": [AIMessage(content="Results obtained")]}
         
-        # Otherwise, let the LLM decide what to do
+        # Let the LLM handle date extraction and tool calling
         response = llm.invoke(messages)
         return {"messages": [response]}
 
