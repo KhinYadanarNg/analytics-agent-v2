@@ -116,7 +116,7 @@ class AnalyticsService:
         """
         Build the agent graph, invoke it, generate chart, 
         then have LLM interpret the results for a natural response.
-        The LLM will handle date extraction from the prompt.
+        The LLM will handle date extraction and chart type detection from the prompt.
 
         Args:
             prompt: The user's query
@@ -126,13 +126,12 @@ class AnalyticsService:
         Returns a dict with keys: success (bool), message (str), chart_image (str base64)
         """
         try:
-            # Detect chart type and report type from prompt
-            chart_type = chart_generator.detect_chart_type_from_prompt(prompt)
+            # Detect report type from prompt (success/failure/both)
             report_type = AnalyticsService.detect_report_type(prompt)
             
             # Log detected parameters for debugging
             logger = logging.getLogger("analytics_agent")
-            logger.info(f"Detected chart type: '{chart_type}' for prompt: '{prompt[:100]}...'")
+            logger.info(f"Processing prompt: '{prompt[:100]}...'")
             logger.info(f"Detected report type: '{report_type}'")
             
             # build_app may raise if USE_LLM is False or config missing
@@ -162,7 +161,6 @@ class AnalyticsService:
         
         state = {
             "messages": messages,
-            "chart_type": chart_type,
             "report_type": report_type,
             "session_id": session_id
         }
@@ -180,6 +178,7 @@ class AnalyticsService:
         file_name = None
         row_count = 0
         date_filter_used = None
+        chart_type = "bar"  # Default chart type
         
         for m in compiled_result.get("messages", []):
             if isinstance(m, ToolMessage):
@@ -192,13 +191,19 @@ class AnalyticsService:
                         chart_data = tool_data.get("chart_data", [])
                         file_name = tool_data.get("file_name")
                         row_count = tool_data.get("row_count", 0)
+                        
+                        # Get the chart type specified by the LLM
+                        if tool_data.get("chart_type_requested"):
+                            chart_type = tool_data.get("chart_type", "bar")
+                            logger.info(f"LLM specified chart type: {chart_type}")
+                        
                         # Check if date filters were used
                         if tool_data.get("date_filter"):
                             date_filter_used = tool_data.get("date_filter")
                 except:
                     tool_results.append(m.content)
             
-            # Also check AIMessage for tool calls to see what dates were used
+            # Also check AIMessage for tool calls to see what dates and chart type were used
             if isinstance(m, AIMessage) and hasattr(m, 'tool_calls'):
                 for tool_call in m.tool_calls:
                     if tool_call.get('args'):
@@ -208,6 +213,10 @@ class AnalyticsService:
                                 'start_date': args.get('start_date'),
                                 'end_date': args.get('end_date')
                             }
+                        # Get chart type from tool call arguments
+                        if args.get('chart_type'):
+                            chart_type = args.get('chart_type')
+                            logger.info(f"LLM called tool with chart_type: {chart_type}")
 
         # Filter chart data based on report type
         original_chart_data = chart_data.copy()
@@ -220,11 +229,12 @@ class AnalyticsService:
             try:
                 chart_image = chart_generator.generate_chart(
                     chart_data=filtered_chart_data,
-                    chart_type=chart_type,
+                    chart_type=chart_type,  # Use LLM-specified chart type
                     file_name=file_name,
                     report_type=report_type
                 )
                 chart_generated = True
+                logger.info(f"Generated {chart_type} chart for {file_name}")
             except Exception as e:
                 logger = logging.getLogger("analytics_agent")
                 logger.exception(f"Failed to generate chart: {e}")
@@ -249,11 +259,16 @@ class AnalyticsService:
             "chart_image": chart_image
         }
         
+        # Add date filters if they were used
+        # if date_filter_used:
+        #     result["date_filters"] = date_filter_used
+        
         # Add additional data if DEBUG mode
         if DEBUG:
             result["chart_data"] = filtered_chart_data
             result["original_chart_data"] = original_chart_data
             result["tool_results"] = tool_results
+            result["chart_type"] = chart_type
 
         return result
 
