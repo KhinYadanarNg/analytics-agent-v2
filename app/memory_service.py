@@ -4,8 +4,9 @@ import uuid
 
 class ConversationMemory:
     """
-    Memory and state management for the analytics agent.
-    Tracks conversation history, user context, and session state.
+    Enhanced memory and state management for the analytics agent.
+    Tracks conversation history, user context, and session state with better
+    conversation context for LLM interactions.
     """
     
     def __init__(self):
@@ -21,6 +22,7 @@ class ConversationMemory:
             "interactions": [],
             "context": {
                 "last_file_queried": None,
+                "last_report_type": "both",
                 "preferred_chart_type": "bar",
                 "session_focus": "analytics"
             }
@@ -29,7 +31,7 @@ class ConversationMemory:
     
     def store_interaction(self, session_id: str, user_prompt: str, 
                          tool_used: str, response: Dict[str, Any]):
-        """Store an interaction in session memory."""
+        """Store an interaction in session memory with enhanced context."""
         if session_id not in self.sessions:
             return False
         
@@ -41,13 +43,18 @@ class ConversationMemory:
                 "success": response.get("success", False),
                 "tool": response.get("tool"),
                 "file_name": response.get("file_name"),
-                "row_count": response.get("row_count", 0)
+                "row_count": response.get("row_count", 0),
+                "report_type": response.get("report_type", "both"),
+                "message": response.get("message", "")[:200] + "..." if len(response.get("message", "")) > 200 else response.get("message", "")  # Truncate long messages
             }
         }
         
         # Update context based on interaction
         if response.get("file_name"):
             self.sessions[session_id]["context"]["last_file_queried"] = response.get("file_name")
+        
+        if response.get("report_type"):
+            self.sessions[session_id]["context"]["last_report_type"] = response.get("report_type")
         
         # Add interaction and maintain history limit
         self.sessions[session_id]["interactions"].append(interaction)
@@ -78,6 +85,55 @@ class ConversationMemory:
             return []
         return self.sessions[session_id]["interactions"]
     
+    def get_conversation_messages_for_llm(self, session_id: str, max_interactions: int = 3) -> List[Dict[str, str]]:
+        """
+        Get formatted conversation history suitable for LLM context.
+        Returns list of dicts with 'role' and 'content' keys.
+        """
+        if session_id not in self.sessions:
+            return []
+        
+        interactions = self.sessions[session_id]["interactions"][-max_interactions:]
+        messages = []
+        
+        for interaction in interactions:
+            # Add user message
+            messages.append({
+                "role": "user",
+                "content": interaction["user_prompt"]
+            })
+            
+            # Add assistant response summary
+            response_summary = interaction.get("response_summary", {})
+            if response_summary.get("success"):
+                file_name = response_summary.get("file_name", "file")
+                row_count = response_summary.get("row_count", 0)
+                report_type = response_summary.get("report_type", "both")
+                
+                assistant_msg = f"I analyzed {file_name} "
+                if report_type != "both":
+                    assistant_msg += f"for {report_type} data "
+                assistant_msg += f"and found {row_count} records."
+                
+                # Add brief summary of findings if available
+                if response_summary.get("message"):
+                    summary_snippet = response_summary["message"][:150]
+                    if len(summary_snippet) < len(response_summary["message"]):
+                        summary_snippet += "..."
+                    assistant_msg += f" {summary_snippet}"
+                
+                messages.append({
+                    "role": "assistant", 
+                    "content": assistant_msg
+                })
+            else:
+                messages.append({
+                    "role": "assistant",
+                    "content": "I encountered an issue processing that request."
+                })
+        
+        return messages
+    
     def cleanup_old_sessions(self, max_age_hours: int = 24):
         """Clean up sessions older than specified hours."""
         current_time = datetime.now()
@@ -103,7 +159,10 @@ class ConversationMemory:
         return True
     
     def resolve_file_reference(self, session_id: str, prompt: str) -> str:
-        """Resolve file references like 'that file', 'the file', etc."""
+        """
+        Enhanced file reference resolution with better context awareness.
+        Resolves references like 'that file', 'the file', etc.
+        """
         if session_id not in self.sessions:
             return prompt
         
@@ -157,7 +216,7 @@ class ConversationMemory:
             # Check if this looks like a data analysis request without explicit file reference
             data_analysis_indicators = [
                 r'success\s+rate', r'analysis', r'data', r'records?', r'show\s+me',
-                r'analyze', r'chart', r'graph', r'statistics'
+                r'analyze', r'chart', r'graph', r'statistics', r'failure\s+rate'
             ]
             
             if any(re.search(indicator, prompt, re.IGNORECASE) for indicator in data_analysis_indicators):
@@ -165,10 +224,19 @@ class ConversationMemory:
                 updated_prompt = f"{prompt} for '{last_file}'"
                 replacements_made.append(("implicit_context", f"for '{last_file}'"))
         
-        if replacements_made:
-            return updated_prompt
-        else:
-            return updated_prompt
+        return updated_prompt
+    
+    def get_last_interaction_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get a summary of the last interaction for context."""
+        if session_id not in self.sessions or not self.sessions[session_id]["interactions"]:
+            return None
+        
+        last_interaction = self.sessions[session_id]["interactions"][-1]
+        return {
+            "user_prompt": last_interaction["user_prompt"],
+            "response_summary": last_interaction["response_summary"],
+            "timestamp": last_interaction["timestamp"]
+        }
 
-# Initialize memory service
+# Initialize enhanced memory service
 memory_service = ConversationMemory()

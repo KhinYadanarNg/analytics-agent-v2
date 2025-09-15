@@ -111,10 +111,15 @@ class AnalyticsService:
         return filtered_data
 
     @staticmethod
-    async def process_query(prompt: str) -> Dict[str, Any]:
+    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Build the agent graph, invoke it, generate chart, 
         then have LLM interpret the results for a natural response.
+
+        Args:
+            prompt: The user's query
+            session_id: Optional session identifier for tracking
+            conversation_history: Optional conversation history for context
 
         Returns a dict with keys: success (bool), message (str), chart_image (str base64)
         """
@@ -124,18 +129,33 @@ class AnalyticsService:
             report_type = AnalyticsService.detect_report_type(prompt)
             
             # build_app may raise if USE_LLM is False or config missing
-            app_graph = build_app(prompt)
+            app_graph = build_app()
         except Exception as e:
             return {"success": False, "message": str(e), "chart_image": None}
 
         # prepare initial graph state with chart type and report type context
+        messages = [SystemMessage(content=SYSTEM)]
+        
+        # Add conversation history if available (previous context)
+        if conversation_history:
+            for interaction in conversation_history[-3:]:  # Use last 3 interactions for context
+                if interaction.get("user_message"):
+                    messages.append(HumanMessage(content=interaction["user_message"]))
+                if interaction.get("assistant_response"):
+                    # Extract the main response text
+                    response_text = interaction["assistant_response"]
+                    if isinstance(response_text, dict):
+                        response_text = response_text.get("message", str(response_text))
+                    messages.append(AIMessage(content=response_text))
+        
+        # Add the current prompt
+        messages.append(HumanMessage(content=prompt))
+        
         state = {
-            "messages": [
-                SystemMessage(content=SYSTEM), 
-                HumanMessage(content=prompt)
-            ],
+            "messages": messages,
             "chart_type": chart_type,
-            "report_type": report_type
+            "report_type": report_type,
+            "session_id": session_id  # Store session_id in state for tools if needed
         }
 
         loop = asyncio.get_running_loop()
@@ -197,14 +217,14 @@ class AnalyticsService:
             chart_generated=chart_generated,
             file_name=file_name,
             row_count=row_count,
-            report_type=report_type
+            report_type=report_type,
+            conversation_history=conversation_history
         )
         
         result = {
             "success": True,
             "message": interpretation,
-            "chart_image": chart_image,
-            "report_type": report_type
+            "chart_image": chart_image
         }
         
         # Add additional data if DEBUG mode
@@ -220,7 +240,7 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
                                 original_chart_data: List[Dict],
                                 chart_type: str, chart_generated: bool,
                                 file_name: str, row_count: int, 
-                                report_type: str) -> str:
+                                report_type: str, conversation_history: List[Dict[str, Any]] = None) -> str:
     """
     Have the LLM interpret the results and provide a natural language response.
     """
@@ -233,6 +253,19 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
         
         # Prepare context for interpretation based on report type
         context_parts = []
+        
+        # Add conversation context if available
+        if conversation_history:
+            recent_files = []
+            for interaction in conversation_history[-2:]:  # Last 2 interactions
+                if interaction.get("user_message"):
+                    # Extract file references from previous conversations
+                    import re
+                    file_matches = re.findall(r'(\w+\.csv)', interaction["user_message"])
+                    recent_files.extend(file_matches)
+            
+            if recent_files:
+                context_parts.append(f"Previously discussed files: {', '.join(set(recent_files))}")
         
         if chart_data:
             context_parts.append(f"File analyzed: {file_name}")
@@ -271,11 +304,23 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
         else:
             context_parts.append(f"No {report_type} data found for file: {file_name}")
         
-        # Create interpretation prompt
+        # Create interpretation prompt with conversation context
+        conversation_context = ""
+        if conversation_history:
+            conversation_context = "\nConversation Context:\n"
+            for i, interaction in enumerate(conversation_history[-2:], 1):  # Last 2 interactions
+                if interaction.get("user_message"):
+                    conversation_context += f"Previous Request {i}: {interaction['user_message']}\n"
+                if interaction.get("assistant_response"):
+                    response = interaction["assistant_response"]
+                    if isinstance(response, dict):
+                        response = response.get("message", "Response provided")
+                    conversation_context += f"Previous Response {i}: {response[:100]}...\n"
+        
         interpretation_prompt = f"""
-Based on the user's request: "{prompt}"
-
-Results obtained:
+Based on the user's current request: "{prompt}"
+{conversation_context}
+Current Results obtained:
 {chr(10).join(context_parts)}
 
 The user specifically requested a {report_type} report, so focus your response accordingly.
@@ -287,6 +332,7 @@ Please provide a natural, conversational response that:
 4. If there are concerning patterns (based on the report type), mention them
 5. Mentions that a {report_type}-focused {chart_type} chart has been generated (if chart was generated)
 6. Be concise but informative
+7. Reference previous context if the current request relates to it (e.g., "that file" referring to previously mentioned files)
 
 Do not use bullet points or numbered lists. Provide a flowing, natural response.
 """
@@ -369,12 +415,14 @@ SYSTEM = (
     "- Be direct and insightful in your analysis.\n"
     "- NEVER fabricate data - only report what the tools return.\n"
     "- Focus your response on the type of report the user requested (success-only, failure-only, or both).\n"
+    "- Use conversation history to understand file references like 'that file', 'this file', or 'the same file'.\n"
+    "- When a user refers to 'that file' or similar, look at the conversation history to identify which file they mean.\n"
 )
 
 # maximum number of assistant->tool cycles before we force-stop the agent
 MAX_AGENT_LOOPS = 10
 
-def build_app(prompt: str):
+def build_app():
     if not USE_LLM:
         raise SystemExit("OPENAI_API_KEY missing. Add it to .env to run the chat agent.")
     llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0).bind_tools(AnalyticsService.TOOLS)

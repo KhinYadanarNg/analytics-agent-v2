@@ -1,5 +1,5 @@
 """
-Simple query coordinator for the analytics agent.
+Enhanced query coordinator that passes conversation history to analytics agent.
 """
 import logging
 import time
@@ -21,18 +21,18 @@ class PromptRequest(BaseModel):
     session_id: str = None
 
 class QueryCoordinator:
-    """Simple coordinator that ties together session and analytics services."""
+    """Enhanced coordinator that provides conversation context to analytics service."""
     
     async def process_query(self, request: PromptRequest, http_request: Request,
                           response: Response, credentials: HTTPAuthorizationCredentials) -> Dict[str, Any]:
-        """Process analytics query with session management."""
+        """Process analytics query with session management and conversation context."""
         session_id = None
         
         try:
             # JWT validation and session setup
             user = validate_jwt_token(credentials)
             org_id = user.get("orgId")
-            user_id = user.get("userId")
+            user_id = user.get("sub")
             
             # Resolve session ID
             if request.session_id:
@@ -45,8 +45,9 @@ class QueryCoordinator:
             if session_id not in memory_service.sessions:
                 session_id = memory_service.create_session(user_id)
             
-            # Get session context and process prompt
+            # Get session context and conversation history
             session_context = memory_service.get_session_context(session_id)
+            conversation_history = memory_service.get_conversation_history(session_id)
             
             # Resolve file references like "this file", "that file" to previous file
             resolved_prompt = memory_service.resolve_file_reference(session_id, request.prompt)
@@ -73,14 +74,17 @@ class QueryCoordinator:
             )
             
             # Set per-request context so tools can access org/user info when the LLM doesn't include them
-            # (tools read from app.request_context.current_org_id/current_user_id)
             if org_id:
                 current_org_id.set(org_id)
             if user_id:
                 current_user_id.set(user_id)
 
-            # Process analytics query
-            result = await AnalyticsService.process_query(resolved_prompt)
+            # Process analytics query with conversation history
+            result = await AnalyticsService.process_query(
+                prompt=resolved_prompt,
+                session_id=session_id,
+                conversation_history=conversation_history
+            )
             
             # Store interaction and add session info
             memory_service.store_interaction(
@@ -91,6 +95,13 @@ class QueryCoordinator:
             )
             
             #result["session_id"] = session_id
+            
+            # Log conversation flow for debugging
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Session {session_id[:8]} - Original prompt: '{request.prompt}'")
+                logger.debug(f"Session {session_id[:8]} - Resolved prompt: '{resolved_prompt}'")
+                logger.debug(f"Session {session_id[:8]} - Report type: {result.get('report_type', 'unknown')}")
+                
             return result
             
         except Exception as error:

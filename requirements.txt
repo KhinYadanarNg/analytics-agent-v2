@@ -1,8 +1,14 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
 python-jose[cryptography]
 python-dotenv
 langchain-openai
 langchain-community
 langgraph
+boto3
+matplotlib
+seaborn
+httpx
+tiktoken
+langsmith
