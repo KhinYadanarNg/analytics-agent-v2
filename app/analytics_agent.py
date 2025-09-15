@@ -128,6 +128,11 @@ class AnalyticsService:
             chart_type = chart_generator.detect_chart_type_from_prompt(prompt)
             report_type = AnalyticsService.detect_report_type(prompt)
             
+            # Log detected chart type for debugging
+            logger = logging.getLogger("analytics_agent")
+            logger.info(f"Detected chart type: '{chart_type}' for prompt: '{prompt[:100]}...'")
+            logger.info(f"Detected report type: '{report_type}'")
+            
             # build_app may raise if USE_LLM is False or config missing
             app_graph = build_app()
         except Exception as e:
@@ -182,9 +187,8 @@ class AnalyticsService:
                         chart_data = tool_data.get("chart_data", [])
                         file_name = tool_data.get("file_name")
                         row_count = tool_data.get("row_count", 0)
-                        # Override chart type if specified in tool result
-                        if tool_data.get("chart_type"):
-                            chart_type = tool_data.get("chart_type")
+                        # Keep the user's requested chart_type - don't override with tool result
+                        # The chart_type was already detected from user prompt and should be preserved
                 except:
                     tool_results.append(m.content)
 
@@ -231,7 +235,6 @@ class AnalyticsService:
         if DEBUG:
             result["chart_data"] = filtered_chart_data
             result["original_chart_data"] = original_chart_data
-            result["chart_type"] = chart_type
             result["tool_results"] = tool_results
 
         return result

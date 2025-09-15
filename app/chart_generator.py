@@ -476,19 +476,67 @@ class ChartGenerator:
         """
         prompt_lower = prompt.lower()
         
-        # Check for specific chart type mentions
-        if any(word in prompt_lower for word in ['pie chart', 'pie graph', 'pie']):
+        # Check for specific chart type mentions with more comprehensive patterns
+        
+        # Pie chart detection
+        pie_patterns = [
+            'pie chart', 'pie graph', 'pie visualization', 'pie plot',
+            'circular chart', 'circular graph', 'show as pie', 'create pie',
+            'generate pie', 'pie representation', 'pie format'
+        ]
+        if any(pattern in prompt_lower for pattern in pie_patterns):
             return 'pie'
-        elif any(word in prompt_lower for word in ['donut chart', 'donut graph', 'donut', 'doughnut']):
+        
+        # Donut chart detection
+        donut_patterns = [
+            'donut chart', 'donut graph', 'donut visualization', 'donut plot',
+            'doughnut chart', 'doughnut graph', 'ring chart', 'ring graph',
+            'show as donut', 'create donut', 'generate donut', 'donut representation'
+        ]
+        if any(pattern in prompt_lower for pattern in donut_patterns):
             return 'donut'
-        elif any(word in prompt_lower for word in ['line chart', 'line graph', 'trend', 'timeline']):
+        
+        # Line chart detection
+        line_patterns = [
+            'line chart', 'line graph', 'line plot', 'line visualization',
+            'trend chart', 'trend graph', 'trend line', 'timeline chart',
+            'show trend', 'trend analysis', 'progression chart', 'time series',
+            'show as line', 'create line', 'generate line'
+        ]
+        if any(pattern in prompt_lower for pattern in line_patterns):
             return 'line'
-        elif any(word in prompt_lower for word in ['stacked', 'stacked bar', 'horizontal bar']):
+        
+        # Stacked bar chart detection
+        stacked_patterns = [
+            'stacked bar', 'stacked chart', 'stacked graph', 'stacked visualization',
+            'horizontal bar', 'horizontal chart', 'horizontal graph',
+            'stacked bar chart', 'horizontal bar chart', 'stacked representation',
+            'show stacked', 'create stacked', 'generate stacked'
+        ]
+        if any(pattern in prompt_lower for pattern in stacked_patterns):
             return 'stacked'
-        elif any(word in prompt_lower for word in ['bar chart', 'bar graph', 'bars']):
+        
+        # Bar chart detection (specific mentions)
+        bar_patterns = [
+            'bar chart', 'bar graph', 'bar plot', 'bar visualization',
+            'column chart', 'column graph', 'vertical bar', 'vertical chart',
+            'show as bar', 'create bar', 'generate bar', 'bar representation',
+            'bar format', 'column format'
+        ]
+        if any(pattern in prompt_lower for pattern in bar_patterns):
             return 'bar'
         
-        # Default to bar chart
+        # Check for general visualization requests that should default to bar
+        general_chart_patterns = [
+            'chart', 'graph', 'plot', 'visualization', 'visual', 'show me',
+            'display', 'create', 'generate', 'draw', 'visualize'
+        ]
+        
+        # If user mentions any chart/visualization but no specific type, default to bar
+        if any(pattern in prompt_lower for pattern in general_chart_patterns):
+            return 'bar'
+        
+        # Default to bar chart if no chart type is explicitly mentioned
         return 'bar'
 
 # Initialize chart generator
