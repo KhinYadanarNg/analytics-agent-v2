@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from app.analytics_agent import AnalyticsService
 from app.memory_service import memory_service
 from app.auth import validate_jwt_token
-from app.request_context import current_org_id, current_user_id
+from app.request_context import set_request_context, get_org_id, get_user_id
 
 logger = logging.getLogger("analytics_agent")
 
@@ -33,6 +33,8 @@ class QueryCoordinator:
             user = validate_jwt_token(credentials)
             org_id = user.get("orgId")
             user_id = user.get("sub")
+            # Set per-request context so tools can access org/user info
+            set_request_context(org_id, user_id)
             
             # Resolve session ID
             if request.session_id:
@@ -72,18 +74,13 @@ class QueryCoordinator:
                 secure=True,
                 samesite="lax"
             )
-            
-            # Set per-request context so tools can access org/user info when the LLM doesn't include them
-            if org_id:
-                current_org_id.set(org_id)
-            if user_id:
-                current_user_id.set(user_id)
-
+             
             # Process analytics query with conversation history
             result = await AnalyticsService.process_query(
                 prompt=resolved_prompt,
                 session_id=session_id,
-                conversation_history=conversation_history
+                conversation_history=conversation_history,
+                org_id=org_id  # Pass org_id to analytics service
             )
             
             # Store interaction and add session info

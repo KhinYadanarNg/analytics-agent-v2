@@ -119,7 +119,7 @@ class AnalyticsService:
         return filtered_data
 
     @staticmethod
-    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None, org_id: str = None) -> Dict[str, Any]:
         """
         Build the agent graph, invoke it, generate chart, 
         then have LLM interpret the results for a natural response.
@@ -129,12 +129,18 @@ class AnalyticsService:
             prompt: The user's query
             session_id: Optional session identifier for tracking
             conversation_history: Optional conversation history for context
+            org_id: Organization ID for filtering data
 
         Returns a dict with keys: success (bool), message (str), chart_image (str base64)
         """
         try:
             # Detect report type from prompt (success/failure/both)
             report_type = AnalyticsService.detect_report_type(prompt)
+            
+            # Set org_id for tools to use as fallback
+            if org_id:
+                from app.tools_agent import set_tools_org_id
+                set_tools_org_id(org_id)
             
             # Log detected parameters for debugging
             logger = logging.getLogger("analytics_agent")
@@ -169,7 +175,8 @@ class AnalyticsService:
         state = {
             "messages": messages,
             "report_type": report_type,
-            "session_id": session_id
+            "session_id": session_id,
+            "org_id": org_id  # Pass org_id through state
         }
 
         loop = asyncio.get_running_loop()

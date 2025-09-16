@@ -27,9 +27,10 @@ class DatabaseService:
             # Resolve file_id from file_name when needed
             if file_name:
                 file_id = await self.get_file_id_by_name(file_name)
-                self.logger.debug("Resolved file_name '%s' -> file_id '%s'", file_name, file_id)
+                self.logger.info("Resolved file_name '%s' -> file_id '%s'", file_name, file_id)
 
             if not file_id:
+                self.logger.error("Could not resolve file_id from file_name: %s", file_name)
                 return {
                     "success": False,
                     "error": f"Could not resolve file_id from file_name: {file_name}",
@@ -41,27 +42,50 @@ class DatabaseService:
 
             # Build filter expression
             filter_expr = boto3.dynamodb.conditions.Attr('file_id').eq(file_id)
+            self.logger.info("Base filter: file_id=%s", file_id)
+            
+            # Always filter out records with empty/null organization_id
+            filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('organization_id').exists()
+            filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('organization_id').ne('')
+            self.logger.info("Added filters to exclude empty/null organization_id")
+            
             if org_id:
+                # Log the org_id being used for filtering
+                self.logger.info("Applying organization filter with org_id: %s", org_id)
                 filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('organization_id').eq(org_id)
-                self.logger.debug("Filtering by org_id: %s", org_id)
+                self.logger.debug("Complete filter: file_id=%s AND organization_id=%s (excluding empty orgs)", file_id, org_id)
+            else:
+                self.logger.warning("No org_id provided - but will still exclude records with empty organization_id")
             
             # Add date range filtering
             if start_date:
                 filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('created_date').gte(start_date)
-                self.logger.debug("Filtering from start_date: %s", start_date)
+                self.logger.debug("Adding start_date filter: %s", start_date)
             if end_date:
                 filter_expr = filter_expr & boto3.dynamodb.conditions.Attr('created_date').lte(end_date)
-                self.logger.debug("Filtering to end_date: %s", end_date)
+                self.logger.debug("Adding end_date filter: %s", end_date)
 
-            self.logger.info("Querying tracker_table for file_id=%s org_id=%s start_date=%s end_date=%s", 
-                           file_id, org_id, start_date, end_date)
-
+            self.logger.info("Executing DynamoDB scan with filters...")
             response = self.tracker_table.scan(
                 FilterExpression=filter_expr
             )
 
             items = response.get('Items', [])
             total = len(items)
+            self.logger.info("DynamoDB returned %d items for file_id=%s org_id=%s", total, file_id, org_id)
+            
+            # Log organization IDs of returned items to debug filtering
+            if items:
+                org_ids_found = []
+                for item in items:
+                    item_org_id = item.get('organization_id', 'NO_ORG_ID')
+                    if item_org_id not in org_ids_found:
+                        org_ids_found.append(item_org_id)
+                self.logger.info("Organization IDs in results: %s", org_ids_found)
+                
+                if org_id and len(org_ids_found) > 1:
+                    self.logger.error("ERROR: Multiple organizations found when filtering by org_id=%s: %s", org_id, org_ids_found)
+            
             if total == 0:
                 # Build descriptive message based on filters applied
                 message_parts = ["No records found for this file"]
@@ -91,17 +115,37 @@ class DatabaseService:
 
             success_count = 0
             fail_count = 0
+            status_values = []
+            unknown_status_count = 0
+            
             for item in items:
                 status = item.get('final_status', None)
+                item_org_id = item.get('organization_id', 'NO_ORG_ID')
+                
                 if status is not None:
                     status_clean = str(status).strip().lower()
+                    status_values.append(f"{status_clean}(org:{item_org_id})")
+                    
                     if status_clean == 'success':
                         success_count += 1
                     elif status_clean == 'fail':
                         fail_count += 1
+                    else:
+                        unknown_status_count += 1
+                        self.logger.warning("Unknown status found: '%s' for org_id=%s", status_clean, item_org_id)
+                else:
+                    unknown_status_count += 1
+                    self.logger.warning("Item with missing final_status for org_id=%s", item_org_id)
 
-            success_rate = round((success_count / total) * 100, 2)
-            fail_rate = round((fail_count / total) * 100, 2)
+            self.logger.info("Status breakdown: Success=%d, Fail=%d, Unknown=%d", success_count, fail_count, unknown_status_count)
+            self.logger.info("Detailed status values: %s", status_values)
+            
+            # Calculate percentages
+            if total > 0:
+                success_rate = round((success_count / total) * 100, 2)
+                fail_rate = round((fail_count / total) * 100, 2)
+            else:
+                success_rate = fail_rate = 0
             self.logger.info("Computed success=%s%% (%d) fail=%s%% (%d) out of total=%d for file_id=%s org_id=%s", 
                            success_rate, success_count, fail_rate, fail_count, total, file_id, org_id)
             chart_data = self.format_chart_data(success_rate, success_count, fail_rate, fail_count)
