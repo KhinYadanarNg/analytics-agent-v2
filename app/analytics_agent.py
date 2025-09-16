@@ -36,54 +36,61 @@ class AnalyticsService:
         """
         prompt_lower = prompt.lower()
         
+        # Check if user explicitly wants both
+        both_indicators = [
+            r'\bboth\b',
+            r'\bsuccess\s+and\s+fail',
+            r'\bsuccess\s+and\s+failure',
+            r'\ball\s+data',
+            r'\bcomplete\s+analysis',
+            r'\bfull\s+report',
+            r'\boverall',
+            r'\btotal',
+            r'\beverything'
+        ]
+        
         # Check for success-only indicators
         success_only_patterns = [
             r'\bonly\s+success',
-            r'\bsuccess\s+only', 
+            r'\bsuccess\s+only',
             r'\bjust\s+success',
-            r'\bsuccess\s+rate\s+only',
-            r'\bsuccessful\s+only',
-            r'\bshow\s+me\s+success',
-            r'\bwhat.*success.*rate',
-            r'\bhow\s+many\s+succeeded',
-            r'\bpercentage\s+of\s+success',
-            r'\bsuccess\s+percentage'
+            r'\bsuccessful\s+only'
         ]
         
         # Check for failure-only indicators
         failure_only_patterns = [
             r'\bonly\s+fail',
             r'\bfail\s+only',
-            r'\bjust\s+fail',
             r'\bfailure\s+only',
-            r'\bfail\s+rate\s+only',
-            r'\bshow\s+me\s+fail',
-            r'\bwhat.*fail.*rate',
-            r'\bhow\s+many\s+failed',
-            r'\bpercentage\s+of\s+fail',
-            r'\bfailure\s+percentage',
-            r'\berror\s+rate'
+            r'\bjust\s+fail',
+            r'\berror\s+only',
+            r'\bissue\s+only'
         ]
         
-        # Check for both indicators (override single type)
-        both_patterns = [
-            r'\bboth\s+success\s+and\s+fail',
-            r'\bsuccess\s+and\s+fail',
-            r'\boverall\s+analysis',
-            r'\bcomplete\s+report',
-            r'\bfull\s+analysis',
-            r'\ball\s+results'
-        ]
+        # Check if both success and failure are mentioned (without "only")
+        has_success = any(word in prompt_lower for word in ['success', 'successful', 'succeeded', 'pass', 'passed'])
+        has_failure = any(word in prompt_lower for word in ['fail', 'failure', 'failed', 'error', 'issue'])
         
-        # Check patterns in order of specificity
-        if any(re.search(pattern, prompt_lower) for pattern in both_patterns):
-            return "both"
-        elif any(re.search(pattern, prompt_lower) for pattern in success_only_patterns):
+        # Decision logic
+        # First check for explicit "only" patterns
+        if any(re.search(pattern, prompt_lower) for pattern in success_only_patterns):
             return "success"
         elif any(re.search(pattern, prompt_lower) for pattern in failure_only_patterns):
             return "failure"
+        # Then check for explicit "both" indicators
+        elif any(re.search(pattern, prompt_lower) for pattern in both_indicators):
+            return "both"
+        # If both success and failure mentioned without "only", show both
+        elif has_success and has_failure:
+            return "both"
+        # If only success mentioned
+        elif has_success and not has_failure:
+            return "success"
+        # If only failure mentioned
+        elif has_failure and not has_success:
+            return "failure"
+        # Default to both if no clear indication
         else:
-            # Default to both if ambiguous
             return "both"
 
     @staticmethod
@@ -449,6 +456,38 @@ Your capabilities:
 - You specialize in retrieving analytics from DynamoDB via the get_success_rate_by_file_name tool
 - You analyze success and failure rates for data processing tasks
 - The data is filtered by the 'created_date' column in the database
+- You can generate various types of visualizations based on user preferences
+
+CRITICAL INSTRUCTIONS FOR REPORT TYPE:
+Pay attention to what metrics the user is asking for:
+- If they mention ONLY success metrics → focus on success data
+- If they mention ONLY failure/error metrics → focus on failure data  
+- If they mention BOTH or want overall analysis → show both success and failure
+- When in doubt, provide both
+
+Examples:
+- "Show me fail rate" → Focus on failure data only
+- "What's the success rate" → Focus on success data only
+- "Show me success and failure rates" → Show both
+- "Analyze the file" → Show both (comprehensive analysis)
+
+CRITICAL INSTRUCTIONS FOR CHART TYPE DETECTION:
+When calling the get_success_rate_by_file_name tool, you MUST specify the chart_type parameter based on the user's request.
+
+Chart type options and when to use them:
+- "bar" (default): Standard vertical bars, good for comparing categories
+- "pie": Circular chart showing proportions, best for showing parts of a whole
+- "donut": Like pie but with a hole in center, modern look for proportions
+- "line": Shows trends or progression, good for time-based data
+- "stacked": Horizontal stacked bar showing composition, good for 100% comparisons
+
+How to detect chart type from user prompt:
+- If user mentions "pie chart", "pie graph", "circular" → use chart_type="pie"
+- If user mentions "donut", "doughnut", "ring" → use chart_type="donut"
+- If user mentions "line chart", "trend", "progression" → use chart_type="line"
+- If user mentions "stacked", "horizontal bar", "composition" → use chart_type="stacked"
+- If user mentions "bar chart", "column", "bars" → use chart_type="bar"
+- If NO chart type is mentioned → use chart_type="bar" (default)
 
 CRITICAL INSTRUCTIONS FOR DATE HANDLING:
 When users mention dates or time periods in their queries, you MUST extract and convert them to YYYY-MM-DD format and pass them as start_date and end_date parameters to the tool.
@@ -460,32 +499,36 @@ IMPORTANT DATE RULES:
 - If user says "on DATE" → use start_date=DATE, end_date=DATE (only that specific date)
 - Always include BOTH start_date and end_date when ANY date is mentioned
 
-Examples of CORRECT date extraction:
-- "today" → start_date="{current_date}", end_date="{current_date}"
-- "yesterday" → calculate yesterday's date and use it for both start_date and end_date
-- "from 2025-09-05" → start_date="2025-09-05", end_date="{current_date}"
-- "since September 5, 2025" → start_date="2025-09-05", end_date="{current_date}"
-- "on December 15, 2024" → start_date="2024-12-15", end_date="2024-12-15"
-- "from Dec 1 to Dec 15" → start_date="2024-12-01", end_date="2024-12-15"
-- "last 7 days" → calculate from 7 days ago to today
-- "this month" → from first day of current month to today
-- "last month" → full previous month range
+Examples of CORRECT tool calls:
+1. User: "Show me fail rate for file customer.csv pie chart from 2025-09-05"
+   Call: get_success_rate_by_file_name(file_name="customer.csv", start_date="2025-09-05", end_date="{current_date}", chart_type="pie")
+   Note: This will generate a pie chart showing ONLY failure data
+
+2. User: "Success rate donut chart for data.csv on 2025-09-05"  
+   Call: get_success_rate_by_file_name(file_name="data.csv", start_date="2025-09-05", end_date="2025-09-05", chart_type="donut")
+   Note: This will generate a donut chart showing ONLY success data
+
+3. User: "Show trend line for errors in system.csv"
+   Call: get_success_rate_by_file_name(file_name="system.csv", chart_type="line")
+   Note: This will generate a line chart showing ONLY failure data (because user said "errors")
+
+4. User: "Analyze customer.csv" (no chart type or date specified)
+   Call: get_success_rate_by_file_name(file_name="customer.csv", chart_type="bar")
+   Note: This will generate a bar chart showing BOTH success and failure data
+
+5. User: "Show me both success and failure rates for test.csv"
+   Call: get_success_rate_by_file_name(file_name="test.csv", chart_type="bar")
+   Note: This will generate a bar chart showing BOTH metrics
 
 When calling the get_success_rate_by_file_name tool:
 1. Always extract the file name from the user's query (remove extra quotes or spaces)
-2. If the user mentions ANY date or time period, ALWAYS include both start_date and end_date
-3. These dates filter the data by the created_date column in the database
-4. If no dates are mentioned, don't include date parameters (returns all data)
+2. ALWAYS specify chart_type parameter (default to "bar" if not mentioned)
+3. If dates are mentioned, include both start_date and end_date
+4. These dates filter the data by the created_date column in the database
 
-Example tool calls:
-- User: "Show me fail rate for file customer.csv from 2025-09-05"
-  Call: get_success_rate_by_file_name(file_name="customer.csv", start_date="2025-09-05", end_date="{current_date}")
-  
-- User: "Success rate for data.csv on 2025-09-05"  
-  Call: get_success_rate_by_file_name(file_name="data.csv", start_date="2025-09-05", end_date="2025-09-05")
+Remember: The chart will be automatically filtered to show only the data the user requested (success only, failure only, or both).
 
 Other instructions:
-- Pay attention to whether the user wants success data, failure data, or both
 - Be direct and insightful in your analysis
 - NEVER fabricate data - only report what the tools return
 - Focus your response on what the user specifically requested
