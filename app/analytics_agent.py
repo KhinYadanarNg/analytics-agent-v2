@@ -138,9 +138,9 @@ class AnalyticsService:
             report_type = AnalyticsService.detect_report_type(prompt)
             
             # Set org_id for tools to use as fallback
-            if org_id:
-                from app.tools_agent import set_tools_org_id
-                set_tools_org_id(org_id)
+            # if org_id:
+            #     from app.tools_agent import set_tools_org_id
+            #     set_tools_org_id(org_id)
             
             # Log detected parameters for debugging
             logger = logging.getLogger("analytics_agent")
