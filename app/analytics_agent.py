@@ -20,6 +20,95 @@ from app.chart_generator import chart_generator
 # Setup logger
 logger = logging.getLogger(__name__)
 
+def sanitize_text_input(text: str, max_length: int = 500) -> str:
+    """Sanitize user input to prevent prompt injection attacks while preserving query intent."""
+    if not text:
+        return ""
+
+    # Remove or escape potentially dangerous characters/patterns
+    sanitized = text.strip()
+
+    # More targeted filtering - preserve core query while blocking injection
+    dangerous_patterns = [
+        r'###.*?(?=\s|$)',  # Section separators with content
+        r'---.*?(?=\s|$)',  # Dividers with content
+        r'System:.*?$(?=\n|$)',  # System message overrides (multiline)
+        r'Assistant:.*?$(?=\n|$)',  # Assistant role overrides (multiline)
+        r'User:.*?$(?=\n|$)',  # User role overrides (multiline)
+        r'Ignore\s+previous.*?$(?=\n|$)',  # Common injection phrase
+        r'Forget\s+previous.*?$(?=\n|$)',  # Common injection phrase
+        r'Disregard.*?$(?=\n|$)',  # Common injection phrase
+        r'You\s+are\s+now.*?$(?=\n|$)',  # Role override attempts
+        r'Your\s+role\s+is.*?$(?=\n|$)',  # Role override attempts
+        r'Act\s+as.*?$(?=\n|$)',  # Role override attempts
+    ]
+
+    for pattern in dangerous_patterns:
+        sanitized = re.sub(pattern, '', sanitized, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
+
+    # Additional single-word patterns that might be embedded
+    single_patterns = [
+        r'\bSystem\b(?!\w)',  # Word boundary to avoid false positives
+        r'\bAssistant\b(?!\w)',
+        r'\bUser\b(?!\w)',
+    ]
+
+    for pattern in single_patterns:
+        sanitized = re.sub(pattern, '', sanitized, flags=re.IGNORECASE)
+
+    # Clean up extra whitespace and normalize
+    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+
+    # Limit length to prevent extremely long inputs
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "..."
+
+    return sanitized
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename inputs to prevent directory traversal and injection."""
+    if not filename:
+        return ""
+
+    # Remove path traversal attempts
+    sanitized = re.sub(r'[./\\]', '', filename)
+
+    # Only allow alphanumeric, dots, hyphens, and underscores
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '', sanitized)
+
+    # Limit length
+    return sanitized[:100]
+
+def sanitize_numeric_value(value: Any) -> str:
+    """Safely convert values to strings for prompt inclusion."""
+    try:
+        if isinstance(value, (int, float)):
+            # Format numbers safely
+            if isinstance(value, float):
+                return f"{value:.2f}"
+            return str(int(value))
+        elif isinstance(value, str):
+            # Remove any non-numeric characters except decimal point
+            return re.sub(r'[^0-9.]', '', value)[:20]
+        else:
+            return str(value)[:50]  # Generic fallback with length limit
+    except:
+        return "[INVALID_VALUE]"
+
+def create_safe_context_message(context_insights: List[str]) -> str:
+    """Create a safe context message with sanitized inputs."""
+    if not context_insights:
+        return "├── No recent context available"
+
+    safe_insights = []
+    for insight in context_insights:
+        # Sanitize each insight
+        safe_insight = sanitize_text_input(insight, 100)
+        if safe_insight:
+            safe_insights.append(f"├── {safe_insight}")
+
+    return "\n".join(safe_insights)
+
 def format_error_message(error_type: str, user_message: str, technical_details: str = "") -> str:
     """Format error messages with consistent structure and user-friendly language."""
     formatted = f"❌ **{error_type}**\n\n{user_message}"
@@ -87,36 +176,42 @@ def get_conversation_context(messages: List) -> List:
     return context_messages
 
 def create_interpretation_prompt(tool_results: List[Dict[str, Any]], context_insights: List[str]) -> str:
-    """Create an enhanced interpretation prompt for the LLM."""
+    """Create an enhanced interpretation prompt for the LLM with sanitized inputs."""
     
     # Build the interpretation prompt
     prompt_parts = []
     
-    # Add context insights
+    # Add context insights with sanitization
     if context_insights:
         prompt_parts.append("CONTEXT INSIGHTS:")
         for insight in context_insights:
-            prompt_parts.append(f"├── {insight}")
+            safe_insight = sanitize_text_input(insight, 100)
+            if safe_insight:
+                prompt_parts.append(f"├── {safe_insight}")
         prompt_parts.append("")
     
-    # Add tool results summary
+    # Add tool results summary with sanitization
     prompt_parts.append("TOOL RESULTS:")
     for i, result in enumerate(tool_results):
         prompt_parts.append(f"├── Result {i+1}:")
         if isinstance(result, dict):
             for key, value in result.items():
+                safe_key = sanitize_text_input(str(key), 50)
                 if key == "data" and isinstance(value, list):
-                    prompt_parts.append(f"│   ├── {key}: {len(value)} records")
+                    prompt_parts.append(f"│   ├── {safe_key}: {len(value)} records")
                     if value and len(value) > 0:
-                        # Show sample of first record
+                        # Show sample of first record with sanitization
                         sample = value[0]
                         if isinstance(sample, dict):
                             sample_keys = list(sample.keys())[:3]  # Show first 3 keys
-                            prompt_parts.append(f"│   │   ├── Sample keys: {', '.join(sample_keys)}")
+                            safe_sample_keys = [sanitize_text_input(str(k), 30) for k in sample_keys]
+                            prompt_parts.append(f"│   │   ├── Sample keys: {', '.join(safe_sample_keys)}")
                 else:
-                    prompt_parts.append(f"│   ├── {key}: {value}")
+                    safe_value = sanitize_text_input(str(value), 100)
+                    prompt_parts.append(f"│   ├── {safe_key}: {safe_value}")
         else:
-            prompt_parts.append(f"│   ├── Raw content: {str(result)[:100]}...")
+            safe_content = sanitize_text_input(str(result), 100)
+            prompt_parts.append(f"│   ├── Raw content: {safe_content}...")
         prompt_parts.append("")
     
     # Add interpretation instructions
@@ -279,23 +374,27 @@ class AnalyticsService:
 
             for interaction in recent_interactions:
                 if interaction.get("response_summary", {}).get("file_name"):
-                    context_insights.append(f"Previously analyzed: {interaction['response_summary']['file_name']}")
+                    safe_filename = sanitize_filename(interaction['response_summary']['file_name'])
+                    context_insights.append(f"Previously analyzed: {safe_filename}")
                 if interaction.get("response_summary", {}).get("report_type"):
-                    context_insights.append(f"Previous focus: {interaction['response_summary']['report_type']} metrics")
+                    safe_report_type = sanitize_text_input(interaction['response_summary']['report_type'], 20)
+                    context_insights.append(f"Previous focus: {safe_report_type} metrics")
 
-            # Add context-aware system message
+            # Add context-aware system message with sanitized content
+            safe_context = create_safe_context_message(context_insights)
             context_message = f"""
 RECENT CONTEXT:
-{chr(10).join(f"├── {insight}" for insight in context_insights) if context_insights else "├── No recent context available"}
+{safe_context}
 
 Use this context to provide more relevant and personalized responses.
 """
             messages.append(SystemMessage(content=context_message))
 
-            # Add conversation history with better formatting
+            # Add conversation history with sanitized inputs
             for interaction in recent_interactions:
                 if interaction.get("user_prompt"):
-                    messages.append(HumanMessage(content=f"Previous query: {interaction['user_prompt']}"))
+                    safe_prompt = sanitize_text_input(interaction['user_prompt'], 200)
+                    messages.append(HumanMessage(content=f"Previous query: {safe_prompt}"))
                 if interaction.get("response_summary", {}).get("message"):
                     # Extract key insights from previous response
                     prev_response = interaction["response_summary"]["message"]
@@ -305,13 +404,17 @@ Use this context to provide more relevant and personalized responses.
                         import re
                         rates = re.findall(r'\d+\.?\d*%', prev_response)
                         if rates:
-                            prev_response = f"Previous analysis showed rates: {', '.join(rates[:2])}"
+                            safe_rates = [sanitize_numeric_value(rate) for rate in rates[:2]]
+                            prev_response = f"Previous analysis showed rates: {', '.join(safe_rates)}"
                         else:
-                            prev_response = prev_response[:150] + "..."
+                            prev_response = sanitize_text_input(prev_response[:150], 150) + "..."
+                    else:
+                        prev_response = sanitize_text_input(prev_response, 150)
                     messages.append(AIMessage(content=f"Previous analysis: {prev_response}"))
         
-        # Add the current prompt
-        messages.append(HumanMessage(content=prompt))
+        # Add the current prompt with sanitization
+        safe_prompt = sanitize_text_input(prompt, 300)
+        messages.append(HumanMessage(content=safe_prompt))
         
         state = {
             "messages": messages,
@@ -483,33 +586,33 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
         context_parts = []
         
         if chart_data:
-            context_parts.append(f"File analyzed: {file_name}")
-            context_parts.append(f"Total records: {row_count}")
-            context_parts.append(f"Report type requested: {report_type}")
+            context_parts.append(f"File analyzed: {sanitize_filename(file_name)}")
+            context_parts.append(f"Total records: {sanitize_numeric_value(row_count)}")
+            context_parts.append(f"Report type requested: {sanitize_text_input(report_type, 20)}")
             
             # Add date context if filters were applied
             if date_filter_used:
                 if date_filter_used.get("start_date") and date_filter_used.get("end_date"):
                     if date_filter_used["start_date"] == date_filter_used["end_date"]:
-                        context_parts.append(f"Date filter: {date_filter_used['start_date']}")
+                        context_parts.append(f"Date filter: {sanitize_text_input(date_filter_used['start_date'], 20)}")
                     else:
-                        context_parts.append(f"Date range: {date_filter_used['start_date']} to {date_filter_used['end_date']}")
+                        context_parts.append(f"Date range: {sanitize_text_input(date_filter_used['start_date'], 20)} to {sanitize_text_input(date_filter_used['end_date'], 20)}")
                 elif date_filter_used.get("start_date"):
-                    context_parts.append(f"From date: {date_filter_used['start_date']}")
+                    context_parts.append(f"From date: {sanitize_text_input(date_filter_used['start_date'], 20)}")
                 elif date_filter_used.get("end_date"):
-                    context_parts.append(f"Until date: {date_filter_used['end_date']}")
+                    context_parts.append(f"Until date: {sanitize_text_input(date_filter_used['end_date'], 20)}")
             
             # Extract metrics based on report type
             if report_type == "success":
                 success_data = next((item for item in chart_data if item.get('status', '').lower() == 'success'), None)
                 if success_data:
-                    context_parts.append(f"Success: {success_data['percentage']:.1f}% ({success_data['count']} records)")
+                    context_parts.append(f"Success: {sanitize_numeric_value(success_data['percentage'])}% ({sanitize_numeric_value(success_data['count'])} records)")
                 else:
                     context_parts.append("No successful records found")
             elif report_type == "failure":
                 fail_data = next((item for item in chart_data if item.get('status', '').lower() == 'fail'), None)
                 if fail_data:
-                    context_parts.append(f"Failure: {fail_data['percentage']:.1f}% ({fail_data['count']} records)")
+                    context_parts.append(f"Failure: {sanitize_numeric_value(fail_data['percentage'])}% ({sanitize_numeric_value(fail_data['count'])} records)")
                 else:
                     context_parts.append("No failed records found")
             else:  # both
@@ -517,9 +620,9 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
                 fail_data = next((item for item in original_chart_data if item.get('status', '').lower() == 'fail'), None)
                 
                 if success_data:
-                    context_parts.append(f"Success: {success_data['percentage']:.1f}% ({success_data['count']} records)")
+                    context_parts.append(f"Success: {sanitize_numeric_value(success_data['percentage'])}% ({sanitize_numeric_value(success_data['count'])} records)")
                 if fail_data:
-                    context_parts.append(f"Failure: {fail_data['percentage']:.1f}% ({fail_data['count']} records)")
+                    context_parts.append(f"Failure: {sanitize_numeric_value(fail_data['percentage'])}% ({sanitize_numeric_value(fail_data['count'])} records)")
             
             if chart_generated:
                 report_desc = {
@@ -527,22 +630,22 @@ async def get_llm_interpretation(prompt: str, chart_data: List[Dict],
                     "failure": "failure-only", 
                     "both": "comprehensive"
                 }
-                context_parts.append(f"Generated {report_desc[report_type]} {chart_type} chart")
+                context_parts.append(f"Generated {sanitize_text_input(report_desc[report_type], 20)} {sanitize_text_input(chart_type, 20)} chart")
         else:
-            context_parts.append(f"No {report_type} data found for file: {file_name}")
+            context_parts.append(f"No {sanitize_text_input(report_type, 20)} data found for file: {sanitize_filename(file_name)}")
             if date_filter_used:
                 context_parts.append("Note: Date filters were applied which may have limited the results")
         
         interpretation_prompt = f"""
 CONTEXT ANALYSIS:
-├── User Request: "{prompt}"
+├── User Request: "{sanitize_text_input(prompt, 200)}"
 ├── Report Type: {report_type}
 ├── Chart Type: {chart_type}
 ├── Date Filters: {date_filter_used or 'None'}
 ├── Data Available: {'Yes' if chart_data else 'No'}
 
 DATA SUMMARY:
-{chr(10).join(f"├── {item['status'].title()}: {item['percentage']:.1f}% ({item['count']} records)" for item in chart_data) if chart_data else "├── No data available"}
+{chr(10).join(f"├── {sanitize_text_input(item['status'].title(), 20)}: {sanitize_numeric_value(item['percentage'])}% ({sanitize_numeric_value(item['count'])} records)" for item in chart_data) if chart_data else "├── No data available"}
 
 RESPONSE REQUIREMENTS:
 ├── Answer the user's specific question directly
@@ -586,9 +689,9 @@ def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int,
     """Enhanced fallback message formatter with intelligent insights."""
 
     if not chart_data:
-        base_msg = f"No {report_type} data found"
+        base_msg = f"No {sanitize_text_input(report_type, 20)} data found"
         if file_name:
-            base_msg += f" for file: {file_name}"
+            base_msg += f" for file: {sanitize_filename(file_name)}"
         if date_filter_used:
             base_msg += f" within the specified date range"
         return base_msg
@@ -600,38 +703,38 @@ def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int,
 
     # File and date context
     if file_name:
-        message_parts.append(f"Analysis of {file_name} complete.")
+        message_parts.append(f"Analysis of {sanitize_filename(file_name)} complete.")
     if date_filter_used:
         if date_filter_used.get("start_date") and date_filter_used.get("end_date"):
             if date_filter_used["start_date"] == date_filter_used["end_date"]:
-                message_parts.append(f"Data from {date_filter_used['start_date']}.")
+                message_parts.append(f"Data from {sanitize_text_input(date_filter_used['start_date'], 20)}.")
             else:
-                message_parts.append(f"Data from {date_filter_used['start_date']} to {date_filter_used['end_date']}.")
+                message_parts.append(f"Data from {sanitize_text_input(date_filter_used['start_date'], 20)} to {sanitize_text_input(date_filter_used['end_date'], 20)}.")
     if row_count > 0:
-        message_parts.append(f"Processed {row_count:,} records.")
+        message_parts.append(f"Processed {sanitize_numeric_value(row_count)} records.")
 
     # Intelligent insights based on data patterns
     if report_type == "success" and success_data:
         percentage = success_data['percentage']
         if percentage >= 95:
-            message_parts.append(f"🎉 Exceptional success rate: {percentage:.1f}% - outstanding performance!")
+            message_parts.append(f"🎉 Exceptional success rate: {sanitize_numeric_value(percentage)}% - outstanding performance!")
         elif percentage >= 90:
-            message_parts.append(f"✅ Excellent success rate: {percentage:.1f}% - very good results.")
+            message_parts.append(f"✅ Excellent success rate: {sanitize_numeric_value(percentage)}% - very good results.")
         elif percentage >= 80:
-            message_parts.append(f"👍 Good success rate: {percentage:.1f}% - solid performance.")
+            message_parts.append(f"👍 Good success rate: {sanitize_numeric_value(percentage)}% - solid performance.")
         else:
-            message_parts.append(f"⚠️ Success rate: {percentage:.1f}% - room for improvement.")
+            message_parts.append(f"⚠️ Success rate: {sanitize_numeric_value(percentage)}% - room for improvement.")
 
     elif report_type == "failure" and fail_data:
         percentage = fail_data['percentage']
         if percentage == 0:
             message_parts.append(f"🎉 Perfect! Zero failure rate - all records processed successfully.")
         elif percentage <= 5:
-            message_parts.append(f"✅ Excellent! Very low failure rate: {percentage:.1f}%.")
+            message_parts.append(f"✅ Excellent! Very low failure rate: {sanitize_numeric_value(percentage)}%.")
         elif percentage <= 10:
-            message_parts.append(f"⚠️ Moderate failure rate: {percentage:.1f}% - worth investigating.")
+            message_parts.append(f"⚠️ Moderate failure rate: {sanitize_numeric_value(percentage)}% - worth investigating.")
         else:
-            message_parts.append(f"🚨 High failure rate detected: {percentage:.1f}% - requires attention.")
+            message_parts.append(f"🚨 High failure rate detected: {sanitize_numeric_value(percentage)}% - requires attention.")
 
     elif report_type == "both":
         if success_data and fail_data:
@@ -642,11 +745,11 @@ def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int,
             if fail_pct == 0:
                 message_parts.append(f"🎉 Perfect performance! 100% success rate with zero failures.")
             elif success_pct >= 90:
-                message_parts.append(f"✅ Strong performance: {success_pct:.1f}% success, {fail_pct:.1f}% failure.")
+                message_parts.append(f"✅ Strong performance: {sanitize_numeric_value(success_pct)}% success, {sanitize_numeric_value(fail_pct)}% failure.")
             elif success_pct >= 80:
-                message_parts.append(f"👍 Good performance: {success_pct:.1f}% success, {fail_pct:.1f}% failure.")
+                message_parts.append(f"👍 Good performance: {sanitize_numeric_value(success_pct)}% success, {sanitize_numeric_value(fail_pct)}% failure.")
             else:
-                message_parts.append(f"⚠️ Needs improvement: {success_pct:.1f}% success, {fail_pct:.1f}% failure.")
+                message_parts.append(f"⚠️ Needs improvement: {sanitize_numeric_value(success_pct)}% success, {sanitize_numeric_value(fail_pct)}% failure.")
 
     # Chart information
     chart_descriptions = {
@@ -656,8 +759,8 @@ def format_basic_message(chart_data: List[Dict], file_name: str, row_count: int,
         "line": "line chart",
         "stacked": "stacked bar chart"
     }
-    chart_desc = chart_descriptions.get(chart_type, f"{chart_type} chart")
-    message_parts.append(f"Generated {report_type}-focused {chart_desc} for visualization.")
+    chart_desc = chart_descriptions.get(chart_type, f"{sanitize_text_input(chart_type, 20)} chart")
+    message_parts.append(f"Generated {sanitize_text_input(report_type, 20)}-focused {chart_desc} for visualization.")
 
     return " ".join(message_parts)
 
@@ -792,8 +895,31 @@ def build_app():
                     
                 except Exception as e:
                     logger.error(f"Interpretation failed: {e}")
-                    # Fallback to basic formatting
-                    fallback_content = format_basic_message(tool_results, context_insights)
+                    # Fallback to basic formatting with correct parameters
+                    # Extract parameters from tool_results for fallback
+                    file_name = None
+                    row_count = 0
+                    chart_type = "bar"
+                    report_type = "both"
+                    
+                    # Try to extract parameters from tool results
+                    for result in tool_results:
+                        if isinstance(result, dict):
+                            if "file_name" in result:
+                                file_name = result["file_name"]
+                            if "row_count" in result:
+                                row_count = result["row_count"]
+                            if "chart_type" in result:
+                                chart_type = result["chart_type"]
+                    
+                    fallback_content = format_basic_message(
+                        chart_data=[],  # No chart data in fallback
+                        file_name=file_name,
+                        row_count=row_count,
+                        chart_type=chart_type,
+                        report_type=report_type,
+                        date_filter_used=None
+                    )
                     return {"messages": [AIMessage(content=fallback_content)]}
             
             # Handle initial queries and follow-ups without tool results
@@ -805,7 +931,14 @@ def build_app():
             
             # Fallback for edge cases
             else:
-                fallback_msg = format_basic_message([], [])
+                fallback_msg = format_basic_message(
+                    chart_data=[],
+                    file_name=None,
+                    row_count=0,
+                    chart_type="bar",
+                    report_type="both",
+                    date_filter_used=None
+                )
                 return {"messages": [AIMessage(content=fallback_msg)]}
                 
         except Exception as e:
