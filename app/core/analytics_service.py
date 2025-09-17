@@ -5,10 +5,9 @@ import asyncio
 import json
 import logging
 from typing import List, Dict, Any
-from app.core.tools_agent import get_success_rate_by_file_name_tool
+from app.core.tools_agent import get_success_rate_by_file_name_tool, get_success_rate_by_domain_name_tool
 from app.llm.classification import get_report_type_from_llm
 from app.utils.sanitization import sanitize_filename
-from app.utils.formatting import format_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +16,8 @@ class AnalyticsService:
     """Handles LLM tool selection, execution, chart generation, and interpretation."""
 
     TOOLS = [
-        get_success_rate_by_file_name_tool
+        get_success_rate_by_file_name_tool,
+        get_success_rate_by_domain_name_tool
     ]
 
     @staticmethod

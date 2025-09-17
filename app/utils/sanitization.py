@@ -18,27 +18,47 @@ def sanitize_text_input(text: str, max_length: int = 500) -> str:
 
     # More targeted filtering - preserve core query while blocking injection
     dangerous_patterns = [
-        r'###.*?(?=\s|$)',  # Section separators with content
-        r'---.*?(?=\s|$)',  # Dividers with content
+        r'###.*?$(?=\n|$)',  # Section separators with content (multiline)
+        r'###.*?(?=\s|$)',  # Section separators with content (single line)
+        r'---.*?$(?=\n|$)',  # Dividers with content (multiline)
+        r'---.*?(?=\s|$)',  # Dividers with content (single line)
         r'System:.*?$(?=\n|$)',  # System message overrides (multiline)
+        r'System:.*?(?=\s|$)',  # System message overrides (single line)
         r'Assistant:.*?$(?=\n|$)',  # Assistant role overrides (multiline)
+        r'Assistant:.*?(?=\s|$)',  # Assistant role overrides (single line)
         r'User:.*?$(?=\n|$)',  # User role overrides (multiline)
-        r'Ignore\s+previous.*?$(?=\n|$)',  # Common injection phrase
-        r'Forget\s+previous.*?$(?=\n|$)',  # Common injection phrase
-        r'Disregard.*?$(?=\n|$)',  # Common injection phrase
-        r'You\s+are\s+now.*?$(?=\n|$)',  # Role override attempts
-        r'Your\s+role\s+is.*?$(?=\n|$)',  # Role override attempts
-        r'Act\s+as.*?$(?=\n|$)',  # Role override attempts
+        r'User:.*?(?=\s|$)',  # User role overrides (single line)
+        r'Ignore\s+previous.*?$(?=\n|$)',  # Common injection phrase (multiline)
+        r'Ignore\s+previous.*?(?=\s|$)',  # Common injection phrase (single line)
+        r'Forget\s+previous.*?$(?=\n|$)',  # Common injection phrase (multiline)
+        r'Forget\s+previous.*?(?=\s|$)',  # Common injection phrase (single line)
+        r'Disregard.*?$(?=\n|$)',  # Common injection phrase (multiline)
+        r'Disregard.*?(?=\s|$)',  # Common injection phrase (single line)
+        r'You\s+are\s+now.*?$(?=\n|$)',  # Role override attempts (multiline)
+        r'You\s+are\s+now.*?(?=\s|$)',  # Role override attempts (single line)
+        r'Your\s+role\s+is.*?$(?=\n|$)',  # Role override attempts (multiline)
+        r'Your\s+role\s+is.*?(?=\s|$)',  # Role override attempts (single line)
+        r'Act\s+as.*?$(?=\n|$)',  # Role override attempts (multiline)
+        r'Act\s+as.*?(?=\s|$)',  # Role override attempts (single line)
+        r'Execute:.*?$(?=\n|$)',  # Direct command execution (multiline)
+        r'Execute:.*?(?=\s|$)',  # Direct command execution (single line)
+        r'Run:.*?$(?=\n|$)',  # Command execution (multiline)
+        r'Run:.*?(?=\s|$)',  # Command execution (single line)
+        r'rm\s+-rf.*?$(?=\n|$)',  # Dangerous rm commands (multiline)
+        r'rm\s+-rf.*?(?=\s|$)',  # Dangerous rm commands (single line)
     ]
 
     for pattern in dangerous_patterns:
         sanitized = re.sub(pattern, '', sanitized, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
 
     # Additional single-word patterns that might be embedded
+    # Only include truly dangerous standalone commands
     single_patterns = [
-        r'\bSystem\b(?!\w)',  # Word boundary to avoid false positives
-        r'\bAssistant\b(?!\w)',
-        r'\bUser\b(?!\w)',
+        r'\brm\b(?!\w)',  # Dangerous file deletion command
+        r'\bdel\b(?!\w)',  # Windows delete command
+        r'\bformat\b(?!\w)',  # Disk formatting command
+        r'\bcmd\b(?!\w)',  # Command prompt
+        r'\bpowershell\b(?!\w)',  # PowerShell
     ]
 
     for pattern in single_patterns:
