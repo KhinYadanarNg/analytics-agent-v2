@@ -326,7 +326,7 @@ class AnalyticsService:
         return filtered_data
 
     @staticmethod
-    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None, org_id: str = None) -> Dict[str, Any]:
+    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Build the agent graph, invoke it, generate chart, 
         then have LLM interpret the results for a natural response.
