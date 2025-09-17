@@ -326,7 +326,7 @@ class AnalyticsService:
         return filtered_data
 
     @staticmethod
-    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def process_query(prompt: str, session_id: str = None, conversation_history: List[Dict[str, Any]] = None, org_id: str = None) -> Dict[str, Any]:
         """
         Build the agent graph, invoke it, generate chart, 
         then have LLM interpret the results for a natural response.
@@ -416,11 +416,12 @@ Use this context to provide more relevant and personalized responses.
         safe_prompt = sanitize_text_input(prompt, 300)
         messages.append(HumanMessage(content=safe_prompt))
         
+        # Prepare state with all required parameters
         state = {
             "messages": messages,
             "report_type": report_type,
             "session_id": session_id,
-            "org_id": org_id  # Pass org_id through state
+            "org_id": org_id if org_id is not None else None  # Ensure org_id is properly handled
         }
 
         loop = asyncio.get_running_loop()
