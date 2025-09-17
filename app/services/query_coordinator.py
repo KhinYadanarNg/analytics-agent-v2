@@ -10,10 +10,10 @@ from fastapi import Request, Response, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ValidationError
 
-from app.analytics_agent import AnalyticsService
-from app.memory_service import memory_service
+from app.core.analytics_service import AnalyticsService
+from app.services.memory_service import memory_service
 from app.auth import validate_jwt_token
-from app.request_context import set_current_org_id, reset_current_org_id, get_current_org_id
+from app.utils.request_context import set_current_org_id, reset_current_org_id, get_current_org_id
 
 # Pre-compile regex patterns for better performance
 FILE_PATTERN = re.compile(r"['\"]([^'\"]*\.csv)['\"]|(\w+\.csv)")

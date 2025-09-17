@@ -10,7 +10,7 @@ from fastapi import FastAPI, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 
 from app.auth import bearer_scheme
-from app.query_coordinator import QueryCoordinator, PromptRequest
+from app.services.query_coordinator import QueryCoordinator, PromptRequest
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

@@ -1,12 +1,10 @@
-from app.database_service import DatabaseService
 from langchain_core.tools import tool
 from typing import Optional, Dict, Any
 import asyncio
 import logging
-from app.request_context import get_current_org_id
+from app.utils.request_context import get_current_org_id
 
 logger = logging.getLogger("tools_agent")
-db_service = DatabaseService()
 
 # Module-level storage for current request org_id (fallback)
 _current_org_id: Optional[str] = None
@@ -54,6 +52,9 @@ def get_success_rate_by_file_name_tool(
     # Handle the async database call - pass org_id explicitly to preserve it
     def run_async_db_call():
         """Run the async database call in a new event loop"""
+        from app.services.database_service import DatabaseService
+        db_service = DatabaseService()
+        
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
         try:
